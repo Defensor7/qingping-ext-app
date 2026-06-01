@@ -18,6 +18,22 @@ Frame {
         w.call("climate", "set_temperature", { "entity_id": widget.entity, "temperature": t })
     }
 
+    function toggleOnOff() {
+        if (!widget || !widget.entity) return
+        var svc = (w.mode === "off") ? "turn_on" : "turn_off"
+        w.call("climate", svc, { "entity_id": widget.entity })
+    }
+
+    function cycleMode() {
+        if (!widget || !widget.entity || !hass || !hass.attributes) return
+        var modes = hass.attributes.hvac_modes || []
+        if (modes.length === 0) return
+        var i = modes.indexOf(w.mode)
+        var next = modes[(i + 1) % modes.length]
+        w.call("climate", "set_hvac_mode",
+               { "entity_id": widget.entity, "hvac_mode": next })
+    }
+
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 14
@@ -26,12 +42,22 @@ Frame {
         RowLayout {
             Layout.fillWidth: true
             spacing: 10
-            MdiIcon {
+            // Wrap MdiIcon in an Item so a sibling MouseArea can sit on top
+            // without breaking the Text-derived MdiIcon's layout.
+            Item {
                 Layout.preferredWidth: w.iconSize || 36
                 Layout.preferredHeight: w.iconSize || 36
-                name: (widget && widget.icon) || "thermostat"
-                size: w.iconSize || 34
-                color: w.iconColor || (w.on ? "#5ab8ff" : "#88aacc")
+                MdiIcon {
+                    anchors.centerIn: parent
+                    name: w.on ? ((widget && widget.icon) || "thermostat")
+                               : "power-off"
+                    size: w.iconSize || 34
+                    color: w.iconColor || (w.on ? "#5ab8ff" : "#88aacc")
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    onClicked: w.toggleOnOff()
+                }
             }
             QText {
                 Layout.fillWidth: true
@@ -52,13 +78,22 @@ Frame {
             font.bold: true
             horizontalAlignment: Text.AlignRight
         }
-        QText {
+        Item {  // tap = cycle HVAC mode
             Layout.fillWidth: true
-            text: w.mode + " · set " + w.setTemp.toFixed(1) + "°"
-            color: "#88aacc"
-            font.pixelSize: 14
-            horizontalAlignment: Text.AlignRight
-            elide: Text.ElideRight
+            Layout.preferredHeight: modeLabel.implicitHeight + 4
+            QText {
+                id: modeLabel
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                text: w.mode + " · set " + w.setTemp.toFixed(1) + "°"
+                color: "#88aacc"
+                font.pixelSize: 14
+                elide: Text.ElideRight
+            }
+            MouseArea {
+                anchors.fill: parent
+                onClicked: w.cycleMode()
+            }
         }
 
         RowLayout {

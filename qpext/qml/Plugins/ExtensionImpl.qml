@@ -8,7 +8,7 @@ import Qing.Controls 1.0
 Item {
     id: impl
     anchors.fill: parent
-    readonly property int revision: 19
+    readonly property int revision: 20
     readonly property int topGap: 72
     readonly property int widgetHeight: 180
     // Loaded once on creation from /data/qpext/version.txt, which deploy.sh
