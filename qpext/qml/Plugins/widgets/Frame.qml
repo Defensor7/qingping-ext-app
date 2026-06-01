@@ -33,12 +33,10 @@ Rectangle {
     border.width: 1
     border.color: !available ? "#2a2a2a" : (on ? "#3388cc" : "#2a2a2a")
 
-    Item {
-        id: body
-        anchors.fill: parent
-        anchors.margins: 9
-    }
-
+    // tap MouseArea is declared BEFORE body so the body's child MouseAreas
+    // (Light's brightness slider, Climate's ±, MediaPlayer's transport keys)
+    // sit on top in QML's stacking order and intercept their clicks first.
+    // Clicks on empty card area fall through to this one → base.tapped().
     MouseArea {
         id: tap
         anchors.fill: parent
@@ -46,4 +44,10 @@ Rectangle {
         onPressAndHold: base.longPressed && base.longPressed()
     }
     property var longPressed   // optional override
+
+    Item {
+        id: body
+        anchors.fill: parent
+        anchors.margins: 9
+    }
 }

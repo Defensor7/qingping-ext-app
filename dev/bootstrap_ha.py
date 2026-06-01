@@ -361,6 +361,128 @@ def write_token_file(token: str) -> None:
     print(f"[bootstrap] long-lived token saved → {TOKEN_FILE}", flush=True)
 
 
+def list_demo_entities(access: str) -> dict[str, str]:
+    """Return {domain: entity_id} picking one demo entity per domain we care
+    about. Demo entities ship via the `demo:` line in configuration.yaml —
+    written by dev/run.sh on first boot."""
+    status, body = _req("GET", "/api/states", headers={"Authorization": f"Bearer {access}"})
+    if status != 200 or not isinstance(body, list):
+        return {}
+    # Each entry: {"entity_id": "...", "state": "...", "attributes": {...}}
+    picks: dict[str, str] = {}
+    for e in body:
+        eid = e.get("entity_id", "")
+        dot = eid.find(".")
+        if dot < 0:
+            continue
+        dom = eid[:dot]
+        if dom in picks:
+            continue
+        # Skip entities the demo platform doesn't own — best-effort filter
+        # against entities qpext itself created (sensor.airmonitor_...).
+        if "qpext" in eid or "airmonitor" in eid:
+            continue
+        picks[dom] = eid
+    return picks
+
+
+# Widget type → HA domain. Mirrors ha_integration/const.py's
+# DOMAIN_FOR_WIDGET_TYPE but written here to keep bootstrap stdlib-only.
+SEED_WIDGET_TYPES = [
+    ("sensor",       "sensor"),
+    ("switch",       "switch"),
+    ("light",        "light"),
+    ("climate",      "climate"),
+    ("media_player", "media_player"),
+    ("cover",        "cover"),
+    ("script",       "script"),
+    ("scene",        "scene"),
+]
+
+
+def find_qpext_entry(access: str) -> str | None:
+    """Return the qpext_airmonitor entry_id, if any."""
+    h = {"Authorization": f"Bearer {access}"}
+    status, body = _req("GET", "/api/config/config_entries/entry", headers=h)
+    if status != 200 or not isinstance(body, list):
+        return None
+    for e in body:
+        if e.get("domain") == "qpext_airmonitor":
+            return e.get("entry_id")
+    return None
+
+
+def seed_widgets(access: str) -> None:
+    """Auto-seed one widget per supported type on the qpext_airmonitor entry,
+    using demo entities. Only seeds if the entry currently has zero widgets,
+    so re-running bootstrap doesn't clobber user edits."""
+    h = {"Authorization": f"Bearer {access}"}
+    entry_id = find_qpext_entry(access)
+    if not entry_id:
+        print("[bootstrap] no qpext_airmonitor entry yet — skipping widget seed", flush=True)
+        return
+    # Check existing options to avoid clobbering.
+    status, body = _req("GET", "/api/config/config_entries/entry", headers=h)
+    cur_widgets = []
+    if status == 200 and isinstance(body, list):
+        for e in body:
+            if e.get("entry_id") == entry_id:
+                cur_widgets = (e.get("options") or {}).get("widgets") or []
+                break
+    if cur_widgets:
+        print(f"[bootstrap] qpext entry already has {len(cur_widgets)} widgets — skipping seed",
+              flush=True)
+        return
+
+    picks = list_demo_entities(access)
+    widgets = []
+    for wtype, dom in SEED_WIDGET_TYPES:
+        eid = picks.get(dom)
+        if eid:
+            widgets.append({"type": wtype, "entity": eid})
+    widgets.append({
+        "type": "button",
+        "label": "Restart HA",
+        "service": "homeassistant.restart",
+        "icon": "mdi:restart",
+    })
+    if not widgets:
+        print("[bootstrap] no demo entities found — is `demo:` in configuration.yaml?",
+              flush=True)
+        return
+
+    # Call our integration's set_options service to write entry.options
+    # transactionally. The update listener picks it up and republishes to
+    # MQTT, so the device immediately sees the new widget list.
+    status, _ = _req(
+        "POST",
+        "/api/services/qpext_airmonitor/set_options",
+        {"entry_id": entry_id, "widgets": widgets},
+        headers=h,
+    )
+    if status in (200, 201):
+        print(f"[bootstrap] seeded {len(widgets)} widgets on entry {entry_id[:8]}…",
+              flush=True)
+    else:
+        print(f"[bootstrap] set_options failed: {status}", flush=True)
+
+
+def existing_token_valid() -> bool:
+    """If TOKEN_FILE has a still-working long-lived token, reuse it
+    instead of minting another one (HA refuses duplicate client_names)."""
+    if not os.path.exists(TOKEN_FILE):
+        return False
+    try:
+        with open(TOKEN_FILE) as f:
+            t = f.read().strip()
+        if not t:
+            return False
+        status, body = _req("GET", "/api/", headers={"Authorization": f"Bearer {t}"})
+        return status == 200
+    except Exception:
+        return False
+
+
 def main() -> None:
     wait_for_ha()
     code = onboard()
@@ -370,8 +492,12 @@ def main() -> None:
     else:
         access = login_with_password()
     add_mqtt_integration(access)
-    token = mint_long_lived(access)
-    write_token_file(token)
+    if existing_token_valid():
+        print("[bootstrap] reusing existing long-lived token (still valid)", flush=True)
+    else:
+        token = mint_long_lived(access)
+        write_token_file(token)
+    seed_widgets(access)
     print()
     print(f"[bootstrap] done.")
     print(f"  HA URL:   {HA}")

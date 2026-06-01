@@ -19,6 +19,22 @@ cd "$HERE"
 # rather than docker-root-owned.
 mkdir -p ha-config
 
+# Pre-seed configuration.yaml on a fresh dev environment so HA's `demo`
+# integration is loaded — gives us light.bed_light, switch.decorative_lights,
+# climate.heatpump, etc. for bootstrap_ha.py to wire into our airmonitor
+# device. On a re-run we leave the existing file alone so user tweaks survive.
+if [ ! -f ha-config/configuration.yaml ]; then
+    cat > ha-config/configuration.yaml <<'EOF'
+# Auto-written by dev/run.sh on first boot. Safe to edit afterwards —
+# subsequent run.sh invocations preserve user changes.
+default_config:
+
+# Virtual entities of every domain, so widgets in the qpext_airmonitor
+# integration have something to bind to.
+demo:
+EOF
+fi
+
 DC() { docker compose --project-name qpext-dev "$@"; }
 
 case "${1:-up}" in

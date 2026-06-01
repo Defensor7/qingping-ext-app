@@ -62,11 +62,46 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         async def _service_republish(call: ServiceCall) -> None:
             for ent in hass.data.get(DOMAIN, {}).values():
                 await _publish_dashboard(hass, ent)
+                await _publish_cameras(hass, ent)
         hass.services.async_register(
             DOMAIN,
             "republish",
             _service_republish,
             schema=vol.Schema({}),
+        )
+
+    # Programmatic seed: write options (widgets / events / cameras) onto
+    # an existing config entry. Used by dev/bootstrap_ha.py to auto-add a
+    # demo widget of every supported type without driving the options UI.
+    if not hass.services.has_service(DOMAIN, "set_options"):
+        async def _service_set_options(call: ServiceCall) -> None:
+            entry_id = call.data.get("entry_id")
+            entries = hass.config_entries.async_entries(DOMAIN)
+            target = None
+            if entry_id:
+                target = next((e for e in entries if e.entry_id == entry_id), None)
+            elif entries:
+                target = entries[0]
+            if target is None:
+                _LOGGER.warning("set_options: no qpext_airmonitor entries")
+                return
+            merged = dict(target.options or {})
+            for key in ("widgets", "events", "cameras"):
+                if key in call.data:
+                    merged[key] = list(call.data[key]) if call.data[key] else []
+            hass.config_entries.async_update_entry(target, options=merged)
+            _LOGGER.info("set_options: applied to %s (keys=%s)",
+                         target.entry_id, list(merged.keys()))
+        hass.services.async_register(
+            DOMAIN,
+            "set_options",
+            _service_set_options,
+            schema=vol.Schema({
+                vol.Optional("entry_id"): str,
+                vol.Optional("widgets"): list,
+                vol.Optional("events"): list,
+                vol.Optional("cameras"): list,
+            }),
         )
 
     return True
@@ -78,6 +113,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     data.pop(entry.entry_id, None)
     if not data:
         hass.services.async_remove(DOMAIN, "republish")
+        hass.services.async_remove(DOMAIN, "set_options")
     return True
 
 
