@@ -5,6 +5,7 @@
 #   cp qpext/qml/cameras.json.example qpext/qml/cameras.json
 qpext/qml/cameras.json
 qpext/qml/widgets.json
+qpext/qml/mqtt.json
 
 # Build outputs / proprietary device artifacts pulled for reverse engineering.
 qpext/qpext.so

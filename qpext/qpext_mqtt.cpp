@@ -22,6 +22,7 @@
 #include <time.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include <ctype.h>
 
 #include <string>
 #include <map>
@@ -262,22 +263,78 @@ struct MqttCfg {
     int port = 1883;
 };
 
+// Forward-declared; the implementations live further down (originally added
+// for the dashboard/set handler). read_cfg needs obj_find here.
+static bool jsoneq(const char* j, const jsmntok_t* t, const char* s);
+static int  skip_tok(const jsmntok_t* toks, int nt, int i);
+static int  obj_find(const char* j, const jsmntok_t* toks, int nt, int obj_idx, const char* key);
+
+// Read MQTT broker credentials. Source priority:
+//   1. /data/qpext/mqtt.json   — qpext-owned config, written by install.sh.
+//      Schema: {"host","port","username","password"[,"client_id"]}.
+//   2. /data/etc/setting.ini   — the stock Qingping app's config; fallback
+//      so the device works the first time before mqtt.json exists.
+// The MAC address is always read from setting.ini — it's the only on-device
+// source of truth for the wifi MAC and the user shouldn't need to type it.
 static bool read_cfg(MqttCfg& c) {
     auto ini = parse_ini(slurp("/data/etc/setting.ini"));
-    auto& h = ini.s["host"];
-    auto& d = ini.s["device"];
-    if (h["host"].empty()) return false;
-    c.host = h["host"];
-    c.port = atoi(h["port"].c_str()); if (c.port <= 0) c.port = 1883;
-    c.user = h["username"];
-    c.pass = h["password"];
-    c.mac  = d["wifi_mac"];
-    c.mac_norm = c.mac;
-    std::string out;
-    for (char ch : c.mac_norm) if (ch != ':') out += ch;
-    c.mac_norm = out;
-    c.client_id = "qpext-" + c.mac_norm;
-    return true;
+    c.mac = ini.s["device"]["wifi_mac"];
+
+    auto tok_extract = [](const std::string& j,
+                          const jsmntok_t* toks, int nt, const char* key) -> std::string {
+        int x = obj_find(j.c_str(), toks, nt, 0, key);
+        if (x < 0) return "";
+        return j.substr(toks[x].start, toks[x].end - toks[x].start);
+    };
+
+    // 1) qpext-owned mqtt.json
+    std::string mj = slurp("/data/qpext/mqtt.json");
+    bool from_json = false;
+    if (!mj.empty()) {
+        jsmn_parser p;
+        std::vector<jsmntok_t> toks(64);
+        int nt;
+        for (;;) {
+            jsmn_init(&p);
+            nt = jsmn_parse(&p, mj.data(), mj.size(), toks.data(), (int)toks.size());
+            if (nt == JSMN_ERROR_NOMEM) { toks.resize(toks.size() * 2); continue; }
+            break;
+        }
+        if (nt > 0 && toks[0].type == JSMN_OBJECT) {
+            c.host = tok_extract(mj, toks.data(), nt, "host");
+            std::string port = tok_extract(mj, toks.data(), nt, "port");
+            c.user = tok_extract(mj, toks.data(), nt, "username");
+            c.pass = tok_extract(mj, toks.data(), nt, "password");
+            std::string cid = tok_extract(mj, toks.data(), nt, "client_id");
+            c.port = port.empty() ? 1883 : atoi(port.c_str());
+            if (c.port <= 0) c.port = 1883;
+            // Reject placeholder values that the .example template ships with.
+            if (!c.host.empty() && c.host != "10.0.0.0" &&
+                c.pass != "PUT_MQTT_PASSWORD_HERE") {
+                from_json = true;
+                if (!cid.empty()) c.client_id = cid;
+                qplog_c("[qpext-mqtt] cfg source: /data/qpext/mqtt.json");
+            }
+        }
+    }
+
+    // 2) Fallback to stock setting.ini
+    if (!from_json) {
+        auto& h = ini.s["host"];
+        if (h["host"].empty()) return false;
+        c.host = h["host"];
+        c.port = atoi(h["port"].c_str()); if (c.port <= 0) c.port = 1883;
+        c.user = h["username"];
+        c.pass = h["password"];
+        qplog_c("[qpext-mqtt] cfg source: /data/etc/setting.ini (fallback)");
+    }
+
+    // mac_norm = MAC without separators, uppercase.
+    std::string norm;
+    for (char ch : c.mac) if (ch != ':' && ch != '-') norm += (char)toupper(ch);
+    c.mac_norm = norm;
+    if (c.client_id.empty()) c.client_id = "qpext-" + c.mac_norm;
+    return !c.host.empty();
 }
 
 static int tcp_open(const char* host, int port) {

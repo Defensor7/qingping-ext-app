@@ -11,7 +11,7 @@
 #   ANDROID_SERIAL          target device (default: first device adb sees)
 #   --device <serial>       same as ANDROID_SERIAL
 #   --no-build              skip zig build (use existing qpext/qpext.so)
-#   --no-seed-config        don't auto-create cameras.json / widgets.json on device
+#   --no-seed-config        skip the local cameras.json / widgets.json seeding
 #
 # Prerequisites: adb, zig (>= 0.13). The script will surface clear errors if
 # either is missing. Root access on the device must already be set up — see
@@ -110,16 +110,57 @@ else
     [ -f "$REPO/qpext/qpext.so" ] || die "--no-build given, but qpext/qpext.so does not exist"
 fi
 
-# ---- seed config files on device if absent ---------------------------------
+# ---- prepare local config files --------------------------------------------
+# We edit locally and let deploy.sh sync the whole qml/ tree to the device.
+# If a local file is missing:
+#   (a) and a non-empty version exists on the device → pull it down (preserves
+#       any in-place config from previous installs / manual edits)
+#   (b) otherwise → seed from the .example template and ask the user to edit
+# In either case, refuse to deploy while placeholder values remain.
+NEEDS_EDIT=0
 if [ $DO_SEED -eq 1 ]; then
-    for f in cameras.json widgets.json; do
-        if ! adb -s "$DEVICE" shell "[ -s /data/qpext/$f ] && echo OK" 2>/dev/null | grep -q OK; then
-            warn "/data/qpext/$f missing — seeding from qpext/qml/$f.example"
-            adb -s "$DEVICE" shell "mkdir -p /data/qpext" >/dev/null
-            adb -s "$DEVICE" push "$REPO/qpext/qml/$f.example" "/data/qpext/$f" >/dev/null
-            warn "  → edit /data/qpext/$f on the device to put real credentials in"
+    for f in mqtt.json cameras.json widgets.json; do
+        local_f="$REPO/qpext/qml/$f"
+        if [ ! -f "$local_f" ]; then
+            if adb -s "$DEVICE" shell "[ -s /data/qpext/$f ] && echo OK" 2>/dev/null | grep -q OK; then
+                say "pulling existing /data/qpext/$f → qpext/qml/$f"
+                adb -s "$DEVICE" pull "/data/qpext/$f" "$local_f" >/dev/null
+            else
+                say "seeding qpext/qml/$f from .example"
+                cp "$REPO/qpext/qml/$f.example" "$local_f"
+                NEEDS_EDIT=1
+            fi
         fi
     done
+
+    # Placeholder detection. The strings below appear ONLY in the .example
+    # templates; any real config will have replaced them.
+    if grep -q 'PUT_LONG_LIVED_ACCESS_TOKEN_HERE' "$REPO/qpext/qml/widgets.json" 2>/dev/null; then
+        warn "qpext/qml/widgets.json still has a placeholder \`ha.token\`"
+        NEEDS_EDIT=1
+    fi
+    if grep -q 'USER:PASS' "$REPO/qpext/qml/cameras.json" 2>/dev/null; then
+        warn "qpext/qml/cameras.json still has a placeholder RTSP URL"
+        NEEDS_EDIT=1
+    fi
+    if grep -qE 'PUT_MQTT_(USERNAME|PASSWORD)_HERE' "$REPO/qpext/qml/mqtt.json" 2>/dev/null; then
+        warn "qpext/qml/mqtt.json still has placeholder broker credentials"
+        NEEDS_EDIT=1
+    fi
+
+    if [ $NEEDS_EDIT -eq 1 ]; then
+        cat <<EOF
+
+${cBOLD}Edit these files locally before continuing:${cRST}
+  $REPO/qpext/qml/mqtt.json      → MQTT broker host/port/credentials
+  $REPO/qpext/qml/widgets.json   → ha.base_url + long-lived access token
+  $REPO/qpext/qml/cameras.json   → RTSP URL with camera credentials
+
+All three are .gitignored, so accidental commits aren't possible. When done:
+  ${cBOLD}$0${cRST}
+EOF
+        exit 0
+    fi
 fi
 
 # ---- deploy ----------------------------------------------------------------

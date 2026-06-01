@@ -55,18 +55,32 @@ NOTES.md                     полные технические заметки 
    - найдёт устройство через `adb devices` (или возьмёт `ANDROID_SERIAL`)
    - убедится, что это действительно Snow2 (есть `/qingping/bin/QingSnow2App`)
    - соберёт `qpext.so` через zig
-   - заполнит `/data/qpext/cameras.json` и `widgets.json` из
-     `.example`-шаблонов, если их там ещё нет (с placeholder'ами для credentials)
+   - подготовит локальные `qpext/qml/cameras.json` и
+     `qpext/qml/widgets.json` (стянет с устройства, если там уже есть;
+     иначе создаст из `.example`) и попросит отредактировать локально,
+     прежде чем продолжить
    - пушит QML + шим + sh-обёртку, перезапускает приложение
 
    Полезные опции: `--update` (git pull + rebuild + redeploy),
    `--uninstall` (восстановить оригинальный `QingSnow2App`),
    `--device <serial>`, `--no-build`, `--no-seed-config`.
 
-3. Заполнить реальные креды в `/data/qpext/cameras.json` (RTSP-URL с
-   логином/паролем камеры) и `/data/qpext/widgets.json`
-   (`ha.base_url` + long-lived access token). Изменения подхватываются
-   QML hot-reload'ом через ~1.5 с, перезапуск приложения не нужен.
+3. Редактирование — **локальное** в клоне:
+   ```
+   qpext/qml/mqtt.json      # host/port/username/password MQTT-брокера
+   qpext/qml/widgets.json   # ha.base_url + long-lived access token
+   qpext/qml/cameras.json   # RTSP URL с кредами камеры
+   ```
+   Все три файла в `.gitignore`. Пока в них есть placeholder-строки
+   (`PUT_LONG_LIVED_ACCESS_TOKEN_HERE`, `PUT_MQTT_PASSWORD_HERE`,
+   `USER:PASS`), `install.sh` откажется деплоить и попросит дописать
+   реальные значения. Дальше — повторный `./install.sh` (или
+   `qpext/deploy.sh push-qml` для горячей подмены QML без рестарта
+   приложения).
+
+   `mqtt.json` — собственный конфиг шима. Если его нет, шим
+   откатывается на стоковый `/data/etc/setting.ini`, но это хрупкая
+   зависимость от Qingping-приложения — лучше иметь свой.
 
 4. (Опционально) поставить HA-интеграцию:
    ```sh
