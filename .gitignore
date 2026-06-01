@@ -36,3 +36,6 @@ find_qml_init.out
 .idea/
 __pycache__/
 *.pyc
+
+# Claude Code per-session state (scheduled-task locks, runtime settings).
+.claude/

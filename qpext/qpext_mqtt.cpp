@@ -764,6 +764,59 @@ static void publish_discovery(int fd, const MqttCfg& c) {
         mqtt_publish(fd, cfg_topic, payload, true);
     }
 
+    // Three egress-filter switches that share the generic ToggleSpec
+    // machinery further down (see EXTRA_TOGGLES). Each blocks a specific
+    // class of outbound traffic from libQt5Network without touching the
+    // shim's own (qpext.so) connections.
+    {
+        struct E { const char* obj_id; const char* name; const char* icon; };
+        static const E entries[] = {
+            {"block_cloud_https", "Block Qingping cloud HTTPS",     "mdi:cloud-off-outline"},
+            {"block_stock_mqtt",  "Block stock-app MQTT push",      "mdi:cloud-cancel"},
+            {"block_miio_ipc",    "Block Mi Home miio_client IPC",  "mdi:bridge"},
+        };
+        for (const auto& e : entries) {
+            std::string cfg_topic   = "homeassistant/switch/" + dev_id + "/" +
+                                      e.obj_id + "/config";
+            std::string state_topic = "qpext/" + c.mac_norm + "/" + e.obj_id;
+            std::string cmd_topic   = state_topic + "/set";
+            std::string payload =
+                "{\"name\":\""+std::string(e.name)+"\","
+                 "\"uniq_id\":\""+dev_id+"_"+e.obj_id+"\","
+                 "\"obj_id\":\""+dev_id+"_"+e.obj_id+"\","
+                 "\"state_topic\":\""+state_topic+"\","
+                 "\"command_topic\":\""+cmd_topic+"\","
+                 "\"payload_on\":\"1\",\"payload_off\":\"0\","
+                 "\"state_on\":\"1\",\"state_off\":\"0\","
+                 "\"icon\":\""+std::string(e.icon)+"\","+dev_blk+"}";
+            mqtt_publish(fd, cfg_topic, payload, true);
+        }
+    }
+
+    // Switch: redirect connectivity-probe pings to 127.0.0.1. The stock
+    // app spawns `/bin/ping <public-DNS-IP>` every ~30 s to check
+    // internet reachability; in some networks one of those IPs (e.g.
+    // 180.76.76.76 from Russia) drops 100% of packets and the WIFI module
+    // flags the device as offline. When this toggle is ON the
+    // getaddrinfo hook substitutes 127.0.0.1 inside the ping subprocess,
+    // so ping always reports "0% packet loss". Persisted in
+    // /data/qpext/ping_stub.txt.
+    {
+        std::string cfg_topic   = "homeassistant/switch/" + dev_id + "/ping_stub/config";
+        std::string state_topic = "qpext/" + c.mac_norm + "/ping_stub";
+        std::string cmd_topic   = "qpext/" + c.mac_norm + "/ping_stub/set";
+        std::string payload =
+            "{\"name\":\"Stub external connectivity ping\","
+             "\"uniq_id\":\""+dev_id+"_ping_stub\","
+             "\"obj_id\":\""+dev_id+"_ping_stub\","
+             "\"state_topic\":\""+state_topic+"\","
+             "\"command_topic\":\""+cmd_topic+"\","
+             "\"payload_on\":\"1\",\"payload_off\":\"0\","
+             "\"state_on\":\"1\",\"state_off\":\"0\","
+             "\"icon\":\"mdi:lan-disconnect\","+dev_blk+"}";
+        mqtt_publish(fd, cfg_topic, payload, true);
+    }
+
     qplog_c("[qpext-mqtt] discovery published for device id=%s", dev_id.c_str());
 }
 
@@ -895,8 +948,32 @@ static std::string json_str(const std::string& j, const char* key) {
 // /data/qpext/update_check.txt file) and the MQTT pub/sub plumbing.
 extern "C" void qpext_set_update_check_allowed(bool allowed);
 extern "C" bool qpext_get_update_check_allowed(void);
+extern "C" void qpext_set_ping_stub_enabled(bool enabled);
+extern "C" bool qpext_get_ping_stub_enabled(void);
+extern "C" void qpext_set_block_cloud_https(bool b);
+extern "C" bool qpext_get_block_cloud_https(void);
+extern "C" void qpext_set_block_stock_mqtt(bool b);
+extern "C" bool qpext_get_block_stock_mqtt(void);
+extern "C" void qpext_set_block_miio_ipc(bool b);
+extern "C" bool qpext_get_block_miio_ipc(void);
 
-static const char* UPDATE_CHECK_FILE = "/data/qpext/update_check.txt";
+static const char* UPDATE_CHECK_FILE      = "/data/qpext/update_check.txt";
+static const char* PING_STUB_FILE         = "/data/qpext/ping_stub.txt";
+static const char* BLOCK_CLOUD_HTTPS_FILE = "/data/qpext/block_cloud_https.txt";
+static const char* BLOCK_STOCK_MQTT_FILE  = "/data/qpext/block_stock_mqtt.txt";
+static const char* BLOCK_MIIO_IPC_FILE    = "/data/qpext/block_miio_ipc.txt";
+
+
+// Parse a textual MQTT payload as a boolean. HA's switch discovery sends
+// the configured `payload_on` / `payload_off` strings; other dashboards
+// (Node-RED, manual mosquitto_pub) often send "1"/"0", "ON"/"OFF",
+// "true"/"false" — we accept all of them.
+static bool payload_to_bool(const std::string& payload) {
+    if (payload == "0" || payload == "OFF" || payload == "off" ||
+        payload == "false" || payload == "False")
+        return false;
+    return true;
+}
 
 // Read the persisted toggle on shim startup. Missing file ⇒ allow (the
 // stock behaviour). Anything other than "0" is treated as enabled.
@@ -922,21 +999,97 @@ static void publish_update_check_state(int fd, const std::string& mac_norm) {
 
 static void handle_update_check_set(int fd, const std::string& mac_norm,
                                     const std::string& payload) {
-    // Tolerate "1"/"0", "ON"/"OFF", "true"/"false" — HA usually sends the
-    // discovery-declared payload_on/payload_off pair, but other dashboards
-    // (Node-RED, manual mosquitto_pub) often send the textual form.
-    bool allowed;
-    if (payload == "0" || payload == "OFF" || payload == "off" ||
-        payload == "false" || payload == "False") {
-        allowed = false;
-    } else {
-        allowed = true;
-    }
+    bool allowed = payload_to_bool(payload);
     qpext_set_update_check_allowed(allowed);
     save_update_check_state(allowed);
     publish_update_check_state(fd, mac_norm);
     qplog_c("[qpext-mqtt] update_check set: %s (payload='%s')",
             allowed ? "ALLOW" : "BLOCK", payload.c_str());
+}
+
+// Same pattern for the ping-stub toggle. Default: OFF (don't silently
+// rewrite DNS unless the user asks for it).
+static void load_ping_stub_state() {
+    std::string s = slurp(PING_STUB_FILE);
+    bool enabled = (s.size() >= 1 && s[0] == '1');
+    qpext_set_ping_stub_enabled(enabled);
+    qplog_c("[qpext-mqtt] ping_stub loaded: %s", enabled ? "ON" : "OFF");
+}
+
+static void save_ping_stub_state(bool enabled) {
+    write_file_atomic(PING_STUB_FILE, std::string(enabled ? "1" : "0") + "\n");
+}
+
+static void publish_ping_stub_state(int fd, const std::string& mac_norm) {
+    std::string topic = "qpext/" + mac_norm + "/ping_stub";
+    mqtt_publish(fd, topic, qpext_get_ping_stub_enabled() ? "1" : "0",
+                 /*retain=*/true);
+}
+
+static void handle_ping_stub_set(int fd, const std::string& mac_norm,
+                                 const std::string& payload) {
+    bool enabled = payload_to_bool(payload);
+    qpext_set_ping_stub_enabled(enabled);
+    save_ping_stub_state(enabled);
+    publish_ping_stub_state(fd, mac_norm);
+    qplog_c("[qpext-mqtt] ping_stub set: %s (payload='%s')",
+            enabled ? "ON" : "OFF", payload.c_str());
+}
+
+// Generic "boolean toggle persisted as 0/1 in a flat file" — same shape as
+// the four hand-rolled toggles above. Used for block_cloud_https /
+// block_stock_mqtt / block_miio_ipc which were added together; the older
+// two keep their bespoke functions to avoid touching the working path.
+struct ToggleSpec {
+    const char* tag;          // log tag ("block_cloud_https", …)
+    const char* obj_id;       // MQTT object_id and topic suffix
+    const char* path;         // persistence file under /data/qpext/
+    bool default_state;       // initial value when file is missing
+    void (*setter)(bool);
+    bool (*getter)(void);
+};
+
+static const ToggleSpec EXTRA_TOGGLES[] = {
+    {"block_cloud_https", "block_cloud_https", BLOCK_CLOUD_HTTPS_FILE,
+        false, qpext_set_block_cloud_https, qpext_get_block_cloud_https},
+    {"block_stock_mqtt",  "block_stock_mqtt",  BLOCK_STOCK_MQTT_FILE,
+        false, qpext_set_block_stock_mqtt,  qpext_get_block_stock_mqtt},
+    {"block_miio_ipc",    "block_miio_ipc",    BLOCK_MIIO_IPC_FILE,
+        false, qpext_set_block_miio_ipc,    qpext_get_block_miio_ipc},
+};
+static const int EXTRA_TOGGLES_N =
+    (int)(sizeof(EXTRA_TOGGLES) / sizeof(EXTRA_TOGGLES[0]));
+
+static void load_extra_toggle(const ToggleSpec& t) {
+    std::string s = slurp(t.path);
+    bool on;
+    if (s.size() >= 1 && (s[0] == '1' || s[0] == '0'))
+        on = (s[0] == '1');
+    else
+        on = t.default_state;
+    t.setter(on);
+    qplog_c("[qpext-mqtt] %s loaded: %s", t.tag, on ? "ON" : "OFF");
+}
+
+static void save_extra_toggle(const ToggleSpec& t, bool on) {
+    write_file_atomic(t.path, std::string(on ? "1" : "0") + "\n");
+}
+
+static void publish_extra_toggle_state(int fd, const std::string& mac_norm,
+                                       const ToggleSpec& t) {
+    std::string topic = "qpext/" + mac_norm + "/" + t.obj_id;
+    mqtt_publish(fd, topic, t.getter() ? "1" : "0", /*retain=*/true);
+}
+
+static void handle_extra_toggle_set(int fd, const std::string& mac_norm,
+                                    const ToggleSpec& t,
+                                    const std::string& payload) {
+    bool on = payload_to_bool(payload);
+    t.setter(on);
+    save_extra_toggle(t, on);
+    publish_extra_toggle_state(fd, mac_norm, t);
+    qplog_c("[qpext-mqtt] %s set: %s (payload='%s')",
+            t.tag, on ? "ON" : "OFF", payload.c_str());
 }
 
 static void handle_cmd(const std::string& payload) {
@@ -956,6 +1109,9 @@ static void* mqtt_thread_fn(void*) {
     read_fw_version();
     qplog_c("[qpext-mqtt] fw=%s qpext=%s", g_fw_version.c_str(), QPEXT_VERSION);
     load_update_check_state();
+    load_ping_stub_state();
+    for (int i = 0; i < EXTRA_TOGGLES_N; ++i)
+        load_extra_toggle(EXTRA_TOGGLES[i]);
     MqttCfg cfg;
     while (!read_cfg(cfg)) qpext_sleep_safe(2);
     qplog_c("[qpext-mqtt] cfg host=%s:%d user=%s mac=%s",
@@ -979,11 +1135,22 @@ static void* mqtt_thread_fn(void*) {
         std::string dashboard_topic = "qpext/" + cfg.mac_norm + "/dashboard/set";
         std::string cameras_topic   = "qpext/" + cfg.mac_norm + "/cameras/set";
         std::string upd_set_topic   = "qpext/" + cfg.mac_norm + "/update_check/set";
+        std::string ping_set_topic  = "qpext/" + cfg.mac_norm + "/ping_stub/set";
         mqtt_subscribe(fd, cmd_topic, 1);
         mqtt_subscribe(fd, dashboard_topic, 2);
         mqtt_subscribe(fd, cameras_topic, 3);
         mqtt_subscribe(fd, upd_set_topic, 4);
+        mqtt_subscribe(fd, ping_set_topic, 5);
+        std::string extra_set_topics[EXTRA_TOGGLES_N];
+        for (int i = 0; i < EXTRA_TOGGLES_N; ++i) {
+            extra_set_topics[i] = "qpext/" + cfg.mac_norm + "/" +
+                                  EXTRA_TOGGLES[i].obj_id + "/set";
+            mqtt_subscribe(fd, extra_set_topics[i], (uint16_t)(10 + i));
+        }
         publish_update_check_state(fd, cfg.mac_norm);
+        publish_ping_stub_state(fd, cfg.mac_norm);
+        for (int i = 0; i < EXTRA_TOGGLES_N; ++i)
+            publish_extra_toggle_state(fd, cfg.mac_norm, EXTRA_TOGGLES[i]);
 
         time_t last_telem = 0, last_ping = time(nullptr);
         bool ok = true;
@@ -1003,6 +1170,18 @@ static void* mqtt_thread_fn(void*) {
                     else if (pkt.topic == cameras_topic)   handle_cameras_set(pkt.payload);
                     else if (pkt.topic == upd_set_topic)
                         handle_update_check_set(fd, cfg.mac_norm, pkt.payload);
+                    else if (pkt.topic == ping_set_topic)
+                        handle_ping_stub_set(fd, cfg.mac_norm, pkt.payload);
+                    else {
+                        for (int i = 0; i < EXTRA_TOGGLES_N; ++i) {
+                            if (pkt.topic == extra_set_topics[i]) {
+                                handle_extra_toggle_set(fd, cfg.mac_norm,
+                                                        EXTRA_TOGGLES[i],
+                                                        pkt.payload);
+                                break;
+                            }
+                        }
+                    }
                 }
                 // type 0x9 = SUBACK, 0xD = PINGRESP — ignore
             }
