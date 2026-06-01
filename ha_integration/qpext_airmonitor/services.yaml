@@ -1,0 +1,5 @@
+republish:
+  name: Re-publish dashboard
+  description: >
+    Re-publish the current widget composition to MQTT (useful after the
+    device was wiped or the broker lost its retained message).

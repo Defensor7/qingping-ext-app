@@ -1,0 +1,36 @@
+// Shared visual frame for all widgets. Children go into `body` via the
+// default property; tap is handled by the inner MouseArea (override `onTapped`).
+import QtQuick 2.9
+
+Rectangle {
+    id: base
+    property var  widget               // config from widgets.json
+    property var  hass                // current HA entity state (may be null)
+    property bool on: false            // visual highlight, set by descendants
+    property bool available: !!hass || (widget && widget.type === "button") ||
+                              (widget && widget.type === "script") ||
+                              (widget && widget.type === "scene")
+    signal call(string domain, string service, var data)
+    signal tapped()
+
+    default property alias bodyChildren: body.children
+
+    radius: 8
+    color: !available ? "#1a1a1a" : (on ? "#1f5588" : "#181818")
+    border.width: 1
+    border.color: !available ? "#2a2a2a" : (on ? "#3388cc" : "#2a2a2a")
+
+    Item {
+        id: body
+        anchors.fill: parent
+        anchors.margins: 9
+    }
+
+    MouseArea {
+        id: tap
+        anchors.fill: parent
+        onClicked: base.tapped()
+        onPressAndHold: base.longPressed && base.longPressed()
+    }
+    property var longPressed   // optional override
+}

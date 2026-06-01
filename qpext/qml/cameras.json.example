@@ -1,0 +1,11 @@
+{
+  "cameras": [
+    {
+      "name":   "doorbell",
+      "label":  "Звонок",
+      "url":    "rtsp://USER:PASS@10.0.0.0:554/av0_0",
+      "fps":    5,
+      "width":  480
+    }
+  ]
+}

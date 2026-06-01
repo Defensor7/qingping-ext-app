@@ -1,0 +1,31 @@
+# Secrets: cameras.json contains an RTSP URL with embedded credentials;
+# widgets.json holds a long-lived Home Assistant access token. Keep the
+# .example templates committed; copy and edit locally:
+#   cp qpext/qml/widgets.json.example qpext/qml/widgets.json
+#   cp qpext/qml/cameras.json.example qpext/qml/cameras.json
+qpext/qml/cameras.json
+qpext/qml/widgets.json
+
+# Build outputs / proprietary device artifacts pulled for reverse engineering.
+qpext/qpext.so
+QingSnow2App
+device_libs/
+qrc_out/
+
+# RE workflow scratch files (large + unredacted).
+tools/
+*.out
+dump_ctx.out
+dump_qml_init.out
+find_qml_init.out
+
+# Local screenshots from grab.sh.
+/tmp/qpext_*.png
+
+# OS / editor noise.
+.DS_Store
+*.swp
+.vscode/
+.idea/
+__pycache__/
+*.pyc

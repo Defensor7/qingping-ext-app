@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:cinzinga.com)",
+      "WebFetch(domain:hackaday.com)",
+      "WebFetch(domain:theroboverse.com)",
+      "Bash(python3 check_sign.py)",
+      "Bash(adb devices *)"
+    ]
+  }
+}

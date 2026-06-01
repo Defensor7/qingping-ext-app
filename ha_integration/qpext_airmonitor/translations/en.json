@@ -1,0 +1,104 @@
+{
+  "title": "Qpext Airmonitor",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add a Qpext Airmonitor",
+        "description": "Enter the device's Wi-Fi MAC address. With or without separators — e.g. 58:2D:34:70:A8:73 or 582D3470A873.",
+        "data": {
+          "mac": "MAC address"
+        }
+      }
+    },
+    "error": {
+      "invalid_mac": "MAC must be 12 hex digits."
+    },
+    "abort": {
+      "already_configured": "A device with this MAC is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Airmonitor dashboard",
+        "description": "Add, edit or remove widgets shown on the device's HA tab.",
+        "menu_options": {
+          "add_widget": "Add a widget",
+          "edit_widget": "Edit a widget",
+          "remove_widget": "Remove a widget",
+          "events_menu": "Triggers (events)",
+          "finish": "Done"
+        }
+      },
+      "add_widget": {
+        "title": "Pick a widget type",
+        "data": {"type": "Type"}
+      },
+      "add_entity_widget": {
+        "title": "New {widget_type} widget",
+        "data": {
+          "entity": "HA entity",
+          "label": "Label (optional)",
+          "icon": "Icon (mdi:…)"
+        }
+      },
+      "add_button": {
+        "title": "New button widget",
+        "data": {
+          "label": "Label",
+          "service": "Service (e.g. switch.turn_on)",
+          "data": "Service data (JSON, optional)",
+          "icon": "Icon (mdi:…)"
+        }
+      },
+      "edit_widget": {"title": "Pick the widget to edit", "data": {"index": "Widget"}},
+      "edit_entity_widget": {
+        "title": "Edit {widget_type} widget",
+        "data": {"entity": "HA entity", "label": "Label", "icon": "Icon"}
+      },
+      "edit_button": {
+        "title": "Edit button widget",
+        "data": {"label": "Label", "service": "Service", "data": "Service data (JSON)", "icon": "Icon"}
+      },
+      "remove_widget": {"title": "Pick the widget to remove", "data": {"index": "Widget"}},
+      "events_menu": {
+        "title": "Triggers",
+        "menu_options": {
+          "add_event": "Add a trigger",
+          "remove_event": "Remove a trigger",
+          "init": "Back"
+        }
+      },
+      "add_event": {
+        "title": "New trigger",
+        "data": {"entity": "Source HA entity", "switch_to": "Switch device to tab"}
+      },
+      "remove_event": {"title": "Pick a trigger to remove", "data": {"index": "Trigger"}}
+    },
+    "error": {
+      "data_invalid_json": "Service data must be valid JSON.",
+      "data_not_object": "Service data must be a JSON object."
+    }
+  },
+  "services": {
+    "republish": {
+      "name": "Re-publish dashboard",
+      "description": "Re-publish current widget composition to MQTT."
+    }
+  },
+  "selector": {
+    "widget_type": {
+      "options": {
+        "sensor": "Sensor (read-only)",
+        "switch": "Switch (toggle)",
+        "light": "Light (toggle + brightness)",
+        "climate": "Climate (temp + setpoint)",
+        "media_player": "Media player",
+        "cover": "Cover",
+        "script": "Script",
+        "scene": "Scene",
+        "button": "Button (service call)"
+      }
+    }
+  }
+}
