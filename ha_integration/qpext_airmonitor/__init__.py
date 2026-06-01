@@ -20,6 +20,8 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 
 from .const import (
+    CAMERAS_TOPIC_TEMPLATE,
+    CONF_CAMERAS,
     CONF_EVENTS,
     CONF_MAC,
     CONF_WIDGETS,
@@ -48,6 +50,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Publish current state on (re)load.
     await _publish_dashboard(hass, entry)
+    await _publish_cameras(hass, entry)
 
     # Re-publish whenever the options change.
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
@@ -81,6 +84,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Forward options changes to the device."""
     await _publish_dashboard(hass, entry)
+    await _publish_cameras(hass, entry)
 
 
 async def _publish_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -108,6 +112,30 @@ async def _publish_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> None:
         len(payload[CONF_EVENTS]),
         topic,
         len(payload_str),
+    )
+
+
+async def _publish_cameras(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Publish the cameras list retained to MQTT — shim writes it to
+    /data/qpext/cameras.json, cam_thread restarts pipelines, MainPage.qml
+    shows / hides the camera tab based on the array length."""
+    mac = entry.data[CONF_MAC]
+    topic = CAMERAS_TOPIC_TEMPLATE.format(mac=mac)
+    payload = {CONF_CAMERAS: list(entry.options.get(CONF_CAMERAS, []))}
+    payload_str = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    try:
+        await hass.services.async_call(
+            "mqtt",
+            "publish",
+            {"topic": topic, "payload": payload_str, "retain": True},
+            blocking=True,
+        )
+    except HomeAssistantError as err:
+        _LOGGER.error("qpext_airmonitor: cameras publish failed: %s", err)
+        return
+    _LOGGER.info(
+        "qpext_airmonitor: published %d cameras to %s (%d bytes)",
+        len(payload[CONF_CAMERAS]), topic, len(payload_str),
     )
 
 

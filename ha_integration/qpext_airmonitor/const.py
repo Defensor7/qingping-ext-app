@@ -3,14 +3,16 @@ from __future__ import annotations
 
 DOMAIN = "qpext_airmonitor"
 
-# MQTT topic the device (qpext.so shim) listens on. {mac} is the wifi MAC
+# MQTT topics the device (qpext.so shim) listens on. {mac} is the wifi MAC
 # without separators, uppercase — e.g. 582D3470A873.
-TOPIC_TEMPLATE = "qpext/{mac}/dashboard/set"
+TOPIC_TEMPLATE         = "qpext/{mac}/dashboard/set"  # widgets + events
+CAMERAS_TOPIC_TEMPLATE = "qpext/{mac}/cameras/set"    # camera array
 
 # Config / options keys
 CONF_MAC = "mac"
 CONF_WIDGETS = "widgets"
 CONF_EVENTS = "events"
+CONF_CAMERAS = "cameras"
 
 # Widget types supported by the QML side (qpext/qml/Plugins/widgets/*.qml).
 WIDGET_TYPES = [

@@ -362,6 +362,14 @@ Sentinel-фильтр: rawValue ≥ 99000 трактуется как "ещё н
   HA читает retained-сообщение и автоматически предлагает добавить
   устройство в *Settings → Devices & Services* — без ручного ввода MAC.
 
+- Подписка на `qpext/<mac>/cameras/set` (retained). Payload —
+  `{"cameras":[{"name","label","url","fps","width"}, ...]}` целиком пишется
+  в `/data/qpext/cameras.json`. Файл уже мониторит `cam_thread_fn` по
+  сигнатуре (см. §3.3) — поднимает / гасит gst-launch'и автоматом.
+  Параллельно `MainPage.qml` опрашивает `cameras.json` каждые 1.5 с и
+  динамически добавляет/убирает вкладку `qpextCamerasView` в PathView'е
+  по `cameras[].length`. Пустой массив → вкладки нет вообще.
+
 - Подписка на `qpext/<mac>/dashboard/set` (retained). Payload — JSON-объект
   с `widgets` и `events`; шим валидирует и **атомарно перезаписывает
   `/data/qpext/widgets.json` целиком**. Merge'а с локальным `ha` блоком

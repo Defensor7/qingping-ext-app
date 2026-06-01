@@ -119,10 +119,11 @@ Item {
                         name: "qpextView"
                         source: "file:///data/qpext/Plugins/Extension.qml"
                     }
-                    ListElement {
-                        name: "qpextCamerasView"
-                        source: "file:///data/qpext/Plugins/Cameras.qml"
-                    }
+                    // qpextCamerasView is appended dynamically by
+                    // pollCameras() below when /data/qpext/cameras.json has
+                    // at least one camera entry. If no cameras are configured
+                    // the tab simply doesn't exist — switch_tab MQTT commands
+                    // targeting it log "not in model" and no-op.
                     Component.onCompleted: {
                         if (!global.isShowAppView || (global.product === Global.PROD_HAIER)) {
                             removePage("appView");
@@ -291,6 +292,48 @@ Item {
     // <<< qpext: shim writes /tmp/qpext/tab_event when an HA trigger fires.
     // We poll the file every 250ms and switch to the named page on a new ts.
     property int qpextLastTs: 0
+    // qpext: cameras.json may be empty / missing — then qpextCamerasView
+    // simply isn't in the PathView. Poll it and add/remove the entry as
+    // the HA integration adds or removes cameras via MQTT.
+    property string camerasSig: ""
+    function pollCameras() {
+        var xhr = new XMLHttpRequest()
+        xhr.open("GET", "file:///data/qpext/cameras.json")
+        xhr.onreadystatechange = function() {
+            if (xhr.readyState !== XMLHttpRequest.DONE) return
+            var t = xhr.responseText || ""
+            var sig = t.length + ":" + t.substring(0, 48)
+            if (sig === control.camerasSig) return
+            control.camerasSig = sig
+            var n = 0
+            try { n = (JSON.parse(t).cameras || []).length } catch (e) {}
+            var existing = -1
+            for (var i = 0; i < model.count; ++i) {
+                if (model.get(i).name === "qpextCamerasView") { existing = i; break }
+            }
+            if (n > 0 && existing < 0) {
+                model.append({"name": "qpextCamerasView",
+                              "source": "file:///data/qpext/Plugins/Cameras.qml"})
+                console.log("[qpext] cameras.json: " + n + " entries → adding camera tab")
+            } else if (n === 0 && existing >= 0) {
+                // If user was on the camera tab, snap to airDatasView first
+                // so the PathView's snap point isn't pointing at a removed item.
+                if (view.currentIndex === (existing - 1 + model.count) % model.count)
+                    view.currentIndex = 0
+                model.remove(existing)
+                console.log("[qpext] cameras.json: empty → removing camera tab")
+            }
+        }
+        xhr.send()
+    }
+    Timer {
+        interval: 1500
+        running: true
+        repeat: true
+        triggeredOnStart: true
+        onTriggered: pollCameras()
+    }
+
     Timer {
         interval: 250
         running: true

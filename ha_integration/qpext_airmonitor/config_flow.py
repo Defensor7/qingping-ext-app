@@ -30,6 +30,7 @@ from homeassistant.helpers import selector
 from homeassistant.helpers.service_info.mqtt import MqttServiceInfo
 
 from .const import (
+    CONF_CAMERAS,
     CONF_EVENTS,
     CONF_MAC,
     CONF_WIDGETS,
@@ -52,6 +53,24 @@ def _widget_label(idx: int, w: dict[str, Any]) -> str:
     t = w.get("type", "?")
     body = w.get("label") or w.get("entity") or w.get("service") or ""
     return f"#{idx + 1} · {t} · {body}".strip()
+
+
+def _camera_label(idx: int, c: dict[str, Any]) -> str:
+    """Human-readable label for the cameras edit/remove selector."""
+    body = c.get("label") or c.get("name") or "(no name)"
+    return f"#{idx + 1} · {body}"
+
+
+def _camera_url_redacted(url: str) -> str:
+    """Hide password in the rtsp://user:pass@host URL for display purposes."""
+    if "@" not in url:
+        return url
+    head, tail = url.rsplit("@", 1)
+    scheme, _, creds = head.partition("//")
+    if ":" not in creds:
+        return url
+    user, _, _password = creds.partition(":")
+    return f"{scheme}//{user}:•••@{tail}"
 
 
 # --------------------------------------------------------------------------- #
@@ -184,6 +203,7 @@ class QpextOptionsFlow(config_entries.OptionsFlow):
         opts = entry.options or {}
         self._widgets: list[dict[str, Any]] = list(opts.get(CONF_WIDGETS, []))
         self._events: list[dict[str, Any]] = list(opts.get(CONF_EVENTS, []))
+        self._cameras: list[dict[str, Any]] = list(opts.get(CONF_CAMERAS, []))
         # State carried across the multi-step "add"/"edit" pages.
         self._add_type: str | None = None
         self._edit_idx: int | None = None
@@ -197,7 +217,7 @@ class QpextOptionsFlow(config_entries.OptionsFlow):
         menu = ["add_widget"]
         if self._widgets:
             menu += ["edit_widget", "remove_widget"]
-        menu += ["events_menu", "finish"]
+        menu += ["cameras_menu", "events_menu", "finish"]
         return self.async_show_menu(step_id="init", menu_options=menu)
 
     async def async_step_finish(
@@ -206,7 +226,11 @@ class QpextOptionsFlow(config_entries.OptionsFlow):
         """Close the flow. State is already persisted by intermediate steps."""
         return self.async_create_entry(
             title="",
-            data={CONF_WIDGETS: self._widgets, CONF_EVENTS: self._events},
+            data={
+                CONF_WIDGETS: self._widgets,
+                CONF_EVENTS: self._events,
+                CONF_CAMERAS: self._cameras,
+            },
         )
 
     # ----- add widget ----------------------------------------------------- #
@@ -525,15 +549,140 @@ class QpextOptionsFlow(config_entries.OptionsFlow):
             return None
         return obj
 
+    # ----- cameras submenu ------------------------------------------------ #
+
+    async def async_step_cameras_menu(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        menu = ["add_camera"]
+        if self._cameras:
+            menu += ["edit_camera", "remove_camera"]
+        menu += ["init"]   # "Back to main"
+        return self.async_show_menu(step_id="cameras_menu", menu_options=menu)
+
+    @staticmethod
+    def _camera_schema(defaults: dict[str, Any] | None = None) -> "vol.Schema":
+        d = defaults or {}
+        return vol.Schema({
+            vol.Required("name", default=d.get("name", "")): selector.TextSelector(),
+            vol.Required("url",  default=d.get("url",  "")): selector.TextSelector(
+                selector.TextSelectorConfig(type=selector.TextSelectorType.URL)
+            ),
+            vol.Optional("label", default=d.get("label", "")): selector.TextSelector(),
+            vol.Optional("fps", default=d.get("fps", 5)): selector.NumberSelector(
+                selector.NumberSelectorConfig(min=1, max=30, step=1,
+                                              mode=selector.NumberSelectorMode.BOX)
+            ),
+            vol.Optional("width", default=d.get("width", 480)): selector.NumberSelector(
+                selector.NumberSelectorConfig(min=160, max=1920, step=80,
+                                              mode=selector.NumberSelectorMode.BOX)
+            ),
+        })
+
+    @staticmethod
+    def _camera_from_input(user_input: dict[str, Any]) -> dict[str, Any]:
+        # name on the device is used as a filename — keep it ASCII/safe.
+        name = "".join(c if (c.isalnum() or c in "-_") else "_"
+                       for c in (user_input.get("name") or "").strip())[:32] or "cam"
+        out = {
+            "name":  name,
+            "url":   (user_input.get("url") or "").strip(),
+            "fps":   int(user_input.get("fps", 5) or 5),
+            "width": int(user_input.get("width", 480) or 480),
+        }
+        if user_input.get("label"):
+            out["label"] = user_input["label"]
+        return out
+
+    async def async_step_add_camera(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            cam = self._camera_from_input(user_input)
+            if not cam["url"].startswith("rtsp://"):
+                errors["url"] = "rtsp_only"
+            elif any(c["name"] == cam["name"] for c in self._cameras):
+                errors["name"] = "name_taken"
+            else:
+                self._cameras.append(cam)
+                await self._persist()
+                return await self.async_step_cameras_menu()
+        return self.async_show_form(
+            step_id="add_camera",
+            data_schema=self._camera_schema(),
+            errors=errors,
+        )
+
+    async def async_step_edit_camera(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        if not self._cameras:
+            return await self.async_step_cameras_menu()
+        if user_input is not None and "index" in user_input:
+            self._edit_idx = int(user_input["index"])
+            return await self.async_step_edit_camera_form()
+        return self.async_show_form(
+            step_id="edit_camera",
+            data_schema=self._index_picker_schema(self._cameras, _camera_label),
+        )
+
+    async def async_step_edit_camera_form(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        idx = self._edit_idx
+        if idx is None or idx >= len(self._cameras):
+            return await self.async_step_cameras_menu()
+        cur = self._cameras[idx]
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            cam = self._camera_from_input(user_input)
+            if not cam["url"].startswith("rtsp://"):
+                errors["url"] = "rtsp_only"
+            elif any(i != idx and c["name"] == cam["name"] for i, c in enumerate(self._cameras)):
+                errors["name"] = "name_taken"
+            else:
+                self._cameras[idx] = cam
+                self._edit_idx = None
+                await self._persist()
+                return await self.async_step_cameras_menu()
+        return self.async_show_form(
+            step_id="edit_camera_form",
+            data_schema=self._camera_schema(cur),
+            description_placeholders={"redacted": _camera_url_redacted(cur.get("url", ""))},
+            errors=errors,
+        )
+
+    async def async_step_remove_camera(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        if not self._cameras:
+            return await self.async_step_cameras_menu()
+        if user_input is not None:
+            i = int(user_input["index"])
+            if 0 <= i < len(self._cameras):
+                del self._cameras[i]
+                await self._persist()
+            return await self.async_step_cameras_menu()
+        return self.async_show_form(
+            step_id="remove_camera",
+            data_schema=self._index_picker_schema(self._cameras, _camera_label),
+        )
+
     async def _persist(self) -> None:
-        """Save current widgets/events to the entry's options.
+        """Save current widgets/events/cameras to the entry's options.
 
         Triggers the update listener (in __init__.py), which republishes
-        the dashboard via MQTT. This means changes apply to the device
-        within the duration of the next QML poll (~1.5 s) — no explicit
-        "save" needed; the final menu option just closes the flow.
+        the dashboard + cameras retained MQTT messages. This means changes
+        apply to the device within the duration of the next QML poll
+        (~1.5 s) — no explicit "save" needed; the final menu option just
+        closes the flow.
         """
         self.hass.config_entries.async_update_entry(
             self.entry,
-            options={CONF_WIDGETS: self._widgets, CONF_EVENTS: self._events},
+            options={
+                CONF_WIDGETS: self._widgets,
+                CONF_EVENTS: self._events,
+                CONF_CAMERAS: self._cameras,
+            },
         )

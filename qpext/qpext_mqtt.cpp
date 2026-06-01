@@ -576,7 +576,7 @@ static void publish_discovery(int fd, const MqttCfg& c) {
     sensor("cpu",          "CPU usage",           "%",   "",            "mdi:chip");
     sensor("ram_free",     "RAM free",            "MiB", "data_size");
     sensor("uptime",       "Uptime",              "s",   "duration");
-    sensor("cam_status",   "Camera status",       "",    "",            "mdi:cctv");
+    sensor("cam_status",   "Camera status",       "",    "",            "mdi:cctv", /*numeric=*/false);
 
     // Air quality (calibrated values pulled from QingSnow2App's own
     // SQLite store — same numbers the device's UI displays).
@@ -704,11 +704,10 @@ static bool write_file_atomic(const char* path, const std::string& data) {
     return rename(tmp.c_str(), path) == 0;
 }
 
-// Apply a `dashboard/set` MQTT message: validate it's a JSON object, then
-// write it verbatim to /data/qpext/widgets.json. After the ha-config split
-// (ha.* lives in /data/qpext/ha.json now) widgets.json is purely the
-// HA-integration-managed cache of {widgets, events} — no merging required.
-static void handle_dashboard_set(const std::string& payload) {
+// Validate a JSON payload, atomically write to `path`. Used for both the
+// dashboard/set and cameras/set topics — same pattern, different target file.
+static void handle_set_payload(const std::string& payload, const char* path,
+                                const char* tag) {
     jsmn_parser pp;
     std::vector<jsmntok_t> ptoks(256);
     int pnt;
@@ -720,15 +719,30 @@ static void handle_dashboard_set(const std::string& payload) {
         break;
     }
     if (pnt < 1 || ptoks[0].type != JSMN_OBJECT) {
-        qplog_c("[qpext-mqtt] dashboard/set: not a JSON object (nt=%d)", pnt);
+        qplog_c("[qpext-mqtt] %s: not a JSON object (nt=%d)", tag, pnt);
         return;
     }
-    if (write_file_atomic("/data/qpext/widgets.json", payload)) {
-        qplog_c("[qpext-mqtt] dashboard/set applied: %zu bytes (%d top-level keys)",
-                payload.size(), ptoks[0].size);
+    if (write_file_atomic(path, payload)) {
+        qplog_c("[qpext-mqtt] %s applied: %zu bytes (%d top-level keys)",
+                tag, payload.size(), ptoks[0].size);
     } else {
-        qplog_c("[qpext-mqtt] dashboard/set: write failed");
+        qplog_c("[qpext-mqtt] %s: write failed", tag);
     }
+}
+
+// Apply a `dashboard/set` MQTT message: validate it's a JSON object, then
+// write it verbatim to /data/qpext/widgets.json. After the ha-config split
+// (ha.* lives in /data/qpext/ha.json now) widgets.json is purely the
+// HA-integration-managed cache of {widgets, events} — no merging required.
+static void handle_dashboard_set(const std::string& payload) {
+    handle_set_payload(payload, "/data/qpext/widgets.json", "dashboard/set");
+}
+
+// `cameras/set`: same shape, different file. The shim's cam_thread polls
+// /data/qpext/cameras.json each second via mtime, restarts gst-launch
+// pipelines when the contents change, so writing here is all we need.
+static void handle_cameras_set(const std::string& payload) {
+    handle_set_payload(payload, "/data/qpext/cameras.json", "cameras/set");
 }
 
 // Very small JSON extract for {"action":"X","name":"Y"} payloads.
@@ -777,8 +791,10 @@ static void* mqtt_thread_fn(void*) {
         publish_presence(fd, cfg);
         std::string cmd_topic = "qpext/" + cfg.mac_norm + "/cmd";
         std::string dashboard_topic = "qpext/" + cfg.mac_norm + "/dashboard/set";
+        std::string cameras_topic   = "qpext/" + cfg.mac_norm + "/cameras/set";
         mqtt_subscribe(fd, cmd_topic, 1);
         mqtt_subscribe(fd, dashboard_topic, 2);
+        mqtt_subscribe(fd, cameras_topic, 3);
 
         time_t last_telem = 0, last_ping = time(nullptr);
         bool ok = true;
@@ -795,6 +811,7 @@ static void* mqtt_thread_fn(void*) {
                 if (pkt.type == 0x3 && !pkt.topic.empty()) {
                     if (pkt.topic == cmd_topic) handle_cmd(pkt.payload);
                     else if (pkt.topic == dashboard_topic) handle_dashboard_set(pkt.payload);
+                    else if (pkt.topic == cameras_topic)   handle_cameras_set(pkt.payload);
                 }
                 // type 0x9 = SUBACK, 0xD = PINGRESP — ignore
             }

@@ -28,11 +28,12 @@
     "step": {
       "init": {
         "title": "Airmonitor App Extension dashboard",
-        "description": "Add, edit or remove widgets shown on the device's HA tab.",
+        "description": "Add, edit or remove widgets shown on the device's HA tab. Cameras add an RTSP tab (hidden when none configured).",
         "menu_options": {
           "add_widget": "Add a widget",
           "edit_widget": "Edit a widget",
           "remove_widget": "Remove a widget",
+          "cameras_menu": "Cameras",
           "events_menu": "Triggers (events)",
           "finish": "Done"
         }
@@ -68,6 +69,32 @@
         "data": {"label": "Label", "service": "Service", "data": "Service data (JSON)", "icon": "Icon"}
       },
       "remove_widget": {"title": "Pick the widget to remove", "data": {"index": "Widget"}},
+      "cameras_menu": {
+        "title": "Cameras",
+        "menu_options": {
+          "add_camera": "Add a camera",
+          "edit_camera": "Edit a camera",
+          "remove_camera": "Remove a camera",
+          "init": "Back"
+        }
+      },
+      "add_camera": {
+        "title": "Add a camera",
+        "data": {
+          "name": "Name (ASCII)",
+          "url": "RTSP URL",
+          "label": "Label",
+          "fps": "FPS",
+          "width": "Width (px)"
+        }
+      },
+      "edit_camera": {"title": "Pick the camera to edit", "data": {"index": "Camera"}},
+      "edit_camera_form": {
+        "title": "Edit camera",
+        "description": "Current URL: {redacted}",
+        "data": {"name": "Name", "url": "RTSP URL", "label": "Label", "fps": "FPS", "width": "Width (px)"}
+      },
+      "remove_camera": {"title": "Pick the camera to remove", "data": {"index": "Camera"}},
       "events_menu": {
         "title": "Triggers",
         "menu_options": {
@@ -84,7 +111,9 @@
     },
     "error": {
       "data_invalid_json": "Service data must be valid JSON.",
-      "data_not_object": "Service data must be a JSON object."
+      "data_not_object": "Service data must be a JSON object.",
+      "rtsp_only": "URL must start with rtsp://",
+      "name_taken": "A camera with this name already exists."
     }
   },
   "services": {
