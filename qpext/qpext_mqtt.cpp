@@ -8,11 +8,15 @@
 // Pure TCP, no TLS. Single thread.
 
 #include <pthread.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/sysinfo.h>
+#include <sys/un.h>
+#include <net/if.h>
 #include <netinet/in.h>
 #include <netdb.h>
 #include <arpa/inet.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -429,6 +433,94 @@ static long uptime_seconds() {
     return up.empty() ? 0 : (long)atof(up.c_str());
 }
 
+// Wi-Fi info via wpa_supplicant's local-socket ctrl interface. SAME
+// transport wpa_cli uses; the protocol is text — send "STATUS" and read
+// back a key=value\n block (BSSID / SSID / ip_address / wpa_state / …).
+// Avoids fork(): popen() blocks indefinitely when invoked from inside a
+// Qt LD_PRELOAD'd application, and SIOCGIWESSID returns nothing on
+// nl80211-only stacks (this device).
+static std::string wpa_ctrl_cmd(const char* iface, const char* cmd) {
+    int sock = socket(AF_UNIX, SOCK_DGRAM, 0);
+    if (sock < 0) return {};
+
+    // Bind to a unique abstract Linux socket so wpa_supplicant's reply
+    // datagram has a return address. Abstract == leading null byte;
+    // avoids the filesystem-cleanup hazard of a real path.
+    struct sockaddr_un me{};
+    me.sun_family = AF_UNIX;
+    int nlen = snprintf(me.sun_path + 1, sizeof(me.sun_path) - 1,
+                        "qpext-wpa-%d-%ld", (int)getpid(), (long)time(nullptr));
+    if (nlen <= 0) { close(sock); return {}; }
+    socklen_t me_len = offsetof(struct sockaddr_un, sun_path) + 1 + (socklen_t)nlen;
+    if (bind(sock, (struct sockaddr*)&me, me_len) < 0) { close(sock); return {}; }
+
+    struct sockaddr_un dst{};
+    dst.sun_family = AF_UNIX;
+    snprintf(dst.sun_path, sizeof(dst.sun_path),
+             "/var/run/wpa_supplicant/%s", iface);
+
+    struct timeval tv{1, 0};                    // 1 s read timeout
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    if (sendto(sock, cmd, strlen(cmd), 0,
+               (struct sockaddr*)&dst, sizeof(dst)) < 0) {
+        close(sock); return {};
+    }
+    char buf[4096];
+    ssize_t n = recv(sock, buf, sizeof(buf), 0);
+    close(sock);
+    if (n <= 0) return {};
+    return std::string(buf, (size_t)n);
+}
+
+// Pull `key=` value out of a wpa_supplicant key=value\n block.
+static std::string kv_extract(const std::string& body, const char* key) {
+    std::string needle = key;
+    needle += "=";
+    size_t p;
+    if (body.compare(0, needle.size(), needle) == 0) {
+        p = needle.size();                       // first line
+    } else {
+        std::string nl_needle = "\n" + needle;
+        p = body.find(nl_needle);
+        if (p == std::string::npos) return {};
+        p += nl_needle.size();
+    }
+    size_t q = body.find('\n', p);
+    if (q == std::string::npos) q = body.size();
+    std::string v = body.substr(p, q - p);
+    while (!v.empty() && (v.back() == '\r' || v.back() == ' ' || v.back() == '\t'))
+        v.pop_back();
+    return v;
+}
+
+// IPv4 address of the interface via SIOCGIFADDR. Returns empty if the
+// interface has no v4 lease yet (DHCP still in progress, link down, etc.).
+static std::string read_ipv4(const char* iface = "wlan0") {
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) return {};
+    struct ifreq ifr{};
+    ifr.ifr_addr.sa_family = AF_INET;
+    strncpy(ifr.ifr_name, iface, IFNAMSIZ - 1);
+    int rc = ioctl(sock, SIOCGIFADDR, &ifr);
+    close(sock);
+    if (rc < 0) return {};
+    struct sockaddr_in* sa = (struct sockaddr_in*)&ifr.ifr_addr;
+    char buf[INET_ADDRSTRLEN] = {0};
+    if (!inet_ntop(AF_INET, &sa->sin_addr, buf, sizeof(buf))) return {};
+    return std::string(buf);
+}
+
+// Strip trailing whitespace/newline from a sysfs single-line read. The
+// power_supply class files all end in '\n' so without the trim every
+// MQTT payload would carry a stray newline.
+static std::string trim_trailing(std::string s) {
+    while (!s.empty() && (s.back() == '\n' || s.back() == '\r' ||
+                          s.back() == ' '  || s.back() == '\t'))
+        s.pop_back();
+    return s;
+}
+
 // ---------------------------------------------------------------------------
 // Discovery + main loop
 // ---------------------------------------------------------------------------
@@ -577,6 +669,16 @@ static void publish_discovery(int fd, const MqttCfg& c) {
     sensor("ram_free",     "RAM free",            "MiB", "data_size");
     sensor("uptime",       "Uptime",              "s",   "duration");
     sensor("cam_status",   "Camera status",       "",    "",            "mdi:cctv", /*numeric=*/false);
+
+    // Connectivity (text). Pulled from `wpa_cli -i wlan0 status` each tick.
+    sensor("ssid",         "Wi-Fi SSID",          "",    "",            "mdi:wifi",            /*numeric=*/false);
+    sensor("ip",           "IP address",          "",    "",            "mdi:ip-network",      /*numeric=*/false);
+
+    // Battery. status is a free-form string ("Full"/"Charging"/"Discharging"/
+    // "Not charging") read straight from /sys/class/power_supply/battery/status;
+    // capacity is the matching numeric %.
+    sensor("battery_status",   "Battery status",   "",    "",       "mdi:battery-charging", /*numeric=*/false);
+    sensor("battery_capacity", "Battery",          "%",   "battery");
 
     // Air quality (calibrated values pulled from QingSnow2App's own
     // SQLite store — same numbers the device's UI displays).
@@ -874,6 +976,21 @@ static void* mqtt_thread_fn(void*) {
                 pub_air("aqi",         0);
                 snprintf(buf, sizeof(buf), "%d", read_light_lux());
                 mqtt_publish(fd, base + "light", buf);
+
+                // Connectivity: ask wpa_supplicant for the live SSID
+                // (its STATUS reply also has ip_address, but we read the
+                // IP via SIOCGIFADDR — same number, one fewer round trip
+                // when no Wi-Fi). On empty results (wlan0 down, no lease
+                // yet) we publish empty so HA shows "unknown".
+                std::string wpa = wpa_ctrl_cmd("wlan0", "STATUS");
+                mqtt_publish(fd, base + "ssid", kv_extract(wpa, "ssid"));
+                mqtt_publish(fd, base + "ip",   read_ipv4());
+
+                // Battery — both files are 1-line sysfs reads.
+                mqtt_publish(fd, base + "battery_status",
+                             trim_trailing(slurp("/sys/class/power_supply/battery/status")));
+                mqtt_publish(fd, base + "battery_capacity",
+                             trim_trailing(slurp("/sys/class/power_supply/battery/capacity")));
             }
 
             // Keepalive ping every 20s.
