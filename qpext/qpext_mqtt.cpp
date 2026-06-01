@@ -989,20 +989,24 @@ static void* mqtt_thread_fn(void*) {
                 snprintf(buf, sizeof(buf), "%d", read_light_lux());
                 mqtt_publish(fd, base + "light", buf);
 
-                // Connectivity: ask wpa_supplicant for the live SSID
-                // (its STATUS reply also has ip_address, but we read the
-                // IP via SIOCGIFADDR — same number, one fewer round trip
-                // when no Wi-Fi). On empty results (wlan0 down, no lease
-                // yet) we publish empty so HA shows "unknown".
-                std::string wpa = wpa_ctrl_cmd("wlan0", "STATUS");
-                mqtt_publish(fd, base + "ssid", kv_extract(wpa, "ssid"));
-                mqtt_publish(fd, base + "ip",   read_ipv4());
-
-                // Battery — both files are 1-line sysfs reads.
-                mqtt_publish(fd, base + "battery_status",
-                             trim_trailing(slurp("/sys/class/power_supply/battery/status")));
-                mqtt_publish(fd, base + "battery_capacity",
-                             trim_trailing(slurp("/sys/class/power_supply/battery/capacity")));
+                // Slow-cadence sensors (Wi-Fi SSID + IP + battery state).
+                // We publish these once every 30 s rather than on every
+                // 3 s telemetry tick: a 3 s cadence noticeably aggravated
+                // the stock QingSnow2App's existing ~30 s self-restart
+                // cycle on this device (root cause TBD — likely Qt main-
+                // loop pressure from the extra wpa_supplicant ctrl chatter
+                // + sysfs reads). 30 s is plenty fresh for SSID/IP/battery.
+                static time_t last_slow = 0;
+                if (now - last_slow >= 30) {
+                    last_slow = now;
+                    std::string wpa = wpa_ctrl_cmd("wlan0", "STATUS");
+                    mqtt_publish(fd, base + "ssid", kv_extract(wpa, "ssid"));
+                    mqtt_publish(fd, base + "ip",   read_ipv4());
+                    mqtt_publish(fd, base + "battery_status",
+                                 trim_trailing(slurp("/sys/class/power_supply/battery/status")));
+                    mqtt_publish(fd, base + "battery_capacity",
+                                 trim_trailing(slurp("/sys/class/power_supply/battery/capacity")));
+                }
             }
 
             // Keepalive ping every 20s.
