@@ -20,6 +20,7 @@
 // QChar is a thin wrapper over ushort, so a UTF-16 char16_t[] literal lays
 // out the same in memory.
 
+#define _GNU_SOURCE
 #include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -246,5 +247,125 @@ void _ZN21QQmlApplicationEngine4loadERK4QUrl(void* self, const void* /*url*/) {
     const QString* s = build_entry();
     load_qstring(self, s);
 }
+
+// --------------------------------------------------------------------------
+// Hook HttpRunner::send(QString)
+//
+// QingSnow2App periodically polls Qingping's `/firmware/checkUpdate`
+// endpoint to see whether a new device firmware is available; when one is,
+// the QML HeaderBar shows a "Firmware update available" notification banner.
+//
+// Direct `UpdateController::checkUpdate(bool)` interposition would be the
+// natural hook point, but although that symbol is exported as GLOBAL
+// DEFAULT, all of its callers live inside QingSnow2App.real itself — the
+// linker resolves those calls via internal addressing so LD_PRELOAD never
+// gets a look in.
+//
+// Instead we hook the stock app's HTTP wrapper `HttpRunner::send(QString)`
+// (in the same binary, but called via Qt signal-slot dispatch which DOES
+// go through the dynamic linker). We read the URL string, and if the
+// shim's `g_update_check_allowed` is false AND the path contains
+// `/firmware/checkUpdate`, we no-op the call. All other URLs (weather,
+// location, …) pass through.
+//
+// Storage for the toggle. Written by qpext_mqtt.cpp via the setter below
+// when an MQTT command arrives, and on startup from /data/qpext/update_check.txt.
+// `volatile` because it's read on the calling (Qt main) thread and written
+// from the MQTT background thread without any other synchronisation — a
+// torn bool read is harmless here.
+// --------------------------------------------------------------------------
+static volatile bool g_update_check_allowed = true;
+
+extern "C" void qpext_set_update_check_allowed(bool allowed) {
+    g_update_check_allowed = allowed;
+}
+extern "C" bool qpext_get_update_check_allowed(void) {
+    return g_update_check_allowed;
+}
+
+// QingSnow2App.real does NOT link libssl directly — Qt5Network dlopens
+// `libssl.so.1.1` lazily and then dlsym()s the OpenSSL functions it needs
+// (`SSL_write`, `SSL_read`, …) by name. Those lookups happen against a
+// specific dlopen handle, NOT through the global symbol scope, so a plain
+// LD_PRELOAD override of `SSL_write` never gets called — Qt grabs the real
+// address straight out of libssl and bypasses us entirely.
+//
+// To intercept anyway we override `dlsym` itself. When Qt asks for
+// `SSL_write` we hand back a pointer to our wrapper, which inspects the
+// plaintext buffer Qt is about to encrypt. If the toggle is off AND the
+// buffer contains a `/firmware/checkUpdate` HTTP request we drop the write
+// (return num, no data forwarded); the network reply eventually surfaces
+// to UpdateController as an error and no "Firmware update available"
+// banner is shown.
+//
+// All other HTTPS traffic — weather, location, telemetry — uses the same
+// SSL connection but different URL paths and so passes through unmodified.
+
+using dlsym_fn   = void* (*)(void*, const char*);
+using ssl_write_fn = int (*)(void* ssl, const void* buf, int num);
+
+static dlsym_fn   real_dlsym   = nullptr;
+static ssl_write_fn real_ssl_write = nullptr;
+
+namespace { static void resolve_real_dlsym(void) {
+    if (real_dlsym) return;
+    // glibc on this device exports `dlsym` versioned as `GLIBC_2.17`
+    // (aarch64 base version). dlvsym resolves the versioned symbol from
+    // the next library along the search order — i.e. the real glibc one,
+    // skipping our own override below. Without this bootstrap our hook
+    // would recursively call itself.
+    real_dlsym = (dlsym_fn)dlvsym(RTLD_NEXT, "dlsym", "GLIBC_2.17");
+    if (!real_dlsym)
+        qplog("[qpext] dlvsym dlsym/GLIBC_2.17 failed — update filter inert");
+}}
+
+// Wrapper Qt actually calls when it think it's calling OpenSSL's SSL_write.
+extern "C" int qpext_ssl_write_hook(void* ssl, const void* buf, int num) {
+    if (!g_update_check_allowed && num > 30 && buf != nullptr) {
+        // memmem() is a glibc extension; available in this device's libc.
+        if (memmem(buf, (size_t)num, "/firmware/checkUpdate", 21) != nullptr) {
+            qplog("[qpext] firmware update check blocked (dropped %d B SSL_write)", num);
+            return num;
+        }
+    }
+    if (real_ssl_write) return real_ssl_write(ssl, buf, num);
+    return num;   // best-effort no-op rather than -1 (which would tear down the SSL session)
+}
+
+extern "C" {
+
+// Export our override as `dlsym@@GLIBC_2.17` (the default GLIBC version
+// alias). libQt5Network's `dlsym` PLT relocation requests exactly that
+// versioned symbol; without the `.symver` alias the loader's versioned
+// lookup would skip our unversioned/Qt_5-tagged export and fall through
+// to glibc's real dlsym, leaving Qt's SSL_write resolution untouched.
+// The double-`@@` form marks our copy as the *default* version, so
+// callers requesting unversioned `dlsym` also resolve to us.
+__asm__(".symver qpext_dlsym_impl,dlsym@@GLIBC_2.17");
+
+// Intercept dlsym so that when Qt's SSL backend asks for `SSL_write` (after
+// dlopening libssl) we hand it our wrapper. Other lookups pass through
+// unchanged. A thread-local recursion guard keeps us safe if anything in
+// our log path or libdl internals ends up calling dlsym again.
+__attribute__((visibility("default")))
+void* qpext_dlsym_impl(void* handle, const char* name) {
+    static __thread int reentry = 0;
+    resolve_real_dlsym();
+    if (!real_dlsym) return nullptr;
+    if (reentry) return real_dlsym(handle, name);
+    reentry = 1;
+    void* sym = real_dlsym(handle, name);
+    if (sym && name && strcmp(name, "SSL_write") == 0) {
+        real_ssl_write = (ssl_write_fn)sym;
+        sym = (void*)&qpext_ssl_write_hook;
+        qplog("[qpext] dlsym SSL_write intercepted → wrapper at %p (real %p)",
+              sym, (void*)real_ssl_write);
+    }
+    reentry = 0;
+    return sym;
+}
+
+}  // extern "C"
+
 
 }  // extern "C"

@@ -743,6 +743,27 @@ static void publish_discovery(int fd, const MqttCfg& c) {
              "\"icon\":\"mdi:restart\","+dev_blk+"}";
         mqtt_publish(fd, cfg_topic, payload, true);
     }
+
+    // Switch: gate the stock app's firmware update check. Hook in qpext.cpp
+    // intercepts UpdateController::checkUpdate(bool); when the toggle is
+    // OFF the hook no-ops the call. State is persisted in
+    // /data/qpext/update_check.txt so the choice survives reboots.
+    {
+        std::string cfg_topic   = "homeassistant/switch/" + dev_id + "/update_check/config";
+        std::string state_topic = "qpext/" + c.mac_norm + "/update_check";
+        std::string cmd_topic   = "qpext/" + c.mac_norm + "/update_check/set";
+        std::string payload =
+            "{\"name\":\"Allow firmware update check\","
+             "\"uniq_id\":\""+dev_id+"_update_check\","
+             "\"obj_id\":\""+dev_id+"_update_check\","
+             "\"state_topic\":\""+state_topic+"\","
+             "\"command_topic\":\""+cmd_topic+"\","
+             "\"payload_on\":\"1\",\"payload_off\":\"0\","
+             "\"state_on\":\"1\",\"state_off\":\"0\","
+             "\"icon\":\"mdi:cloud-search\","+dev_blk+"}";
+        mqtt_publish(fd, cfg_topic, payload, true);
+    }
+
     qplog_c("[qpext-mqtt] discovery published for device id=%s", dev_id.c_str());
 }
 
@@ -869,6 +890,55 @@ static std::string json_str(const std::string& j, const char* key) {
     return j.substr(p + 1, q - p - 1);
 }
 
+// Set by the qpext.cpp UpdateController::checkUpdate hook to read its toggle
+// state. The shim caches the bool here; this file owns persistence (the
+// /data/qpext/update_check.txt file) and the MQTT pub/sub plumbing.
+extern "C" void qpext_set_update_check_allowed(bool allowed);
+extern "C" bool qpext_get_update_check_allowed(void);
+
+static const char* UPDATE_CHECK_FILE = "/data/qpext/update_check.txt";
+
+// Read the persisted toggle on shim startup. Missing file ⇒ allow (the
+// stock behaviour). Anything other than "0" is treated as enabled.
+static void load_update_check_state() {
+    std::string s = slurp(UPDATE_CHECK_FILE);
+    bool allowed = !(s.size() >= 1 && s[0] == '0');
+    qpext_set_update_check_allowed(allowed);
+    qplog_c("[qpext-mqtt] update_check loaded: %s", allowed ? "ALLOW" : "BLOCK");
+}
+
+// Persist the toggle so the choice survives reboots.
+static void save_update_check_state(bool allowed) {
+    write_file_atomic(UPDATE_CHECK_FILE, std::string(allowed ? "1" : "0") + "\n");
+}
+
+// Publish the current toggle on its state topic (retained). HA reads the
+// switch state from the retained value on (re)subscribe.
+static void publish_update_check_state(int fd, const std::string& mac_norm) {
+    std::string topic = "qpext/" + mac_norm + "/update_check";
+    mqtt_publish(fd, topic, qpext_get_update_check_allowed() ? "1" : "0",
+                 /*retain=*/true);
+}
+
+static void handle_update_check_set(int fd, const std::string& mac_norm,
+                                    const std::string& payload) {
+    // Tolerate "1"/"0", "ON"/"OFF", "true"/"false" — HA usually sends the
+    // discovery-declared payload_on/payload_off pair, but other dashboards
+    // (Node-RED, manual mosquitto_pub) often send the textual form.
+    bool allowed;
+    if (payload == "0" || payload == "OFF" || payload == "off" ||
+        payload == "false" || payload == "False") {
+        allowed = false;
+    } else {
+        allowed = true;
+    }
+    qpext_set_update_check_allowed(allowed);
+    save_update_check_state(allowed);
+    publish_update_check_state(fd, mac_norm);
+    qplog_c("[qpext-mqtt] update_check set: %s (payload='%s')",
+            allowed ? "ALLOW" : "BLOCK", payload.c_str());
+}
+
 static void handle_cmd(const std::string& payload) {
     std::string action = json_str(payload, "action");
     qplog_c("[qpext-mqtt] cmd action='%s' payload='%s'",
@@ -885,6 +955,7 @@ static void handle_cmd(const std::string& payload) {
 static void* mqtt_thread_fn(void*) {
     read_fw_version();
     qplog_c("[qpext-mqtt] fw=%s qpext=%s", g_fw_version.c_str(), QPEXT_VERSION);
+    load_update_check_state();
     MqttCfg cfg;
     while (!read_cfg(cfg)) qpext_sleep_safe(2);
     qplog_c("[qpext-mqtt] cfg host=%s:%d user=%s mac=%s",
@@ -907,9 +978,12 @@ static void* mqtt_thread_fn(void*) {
         std::string cmd_topic = "qpext/" + cfg.mac_norm + "/cmd";
         std::string dashboard_topic = "qpext/" + cfg.mac_norm + "/dashboard/set";
         std::string cameras_topic   = "qpext/" + cfg.mac_norm + "/cameras/set";
+        std::string upd_set_topic   = "qpext/" + cfg.mac_norm + "/update_check/set";
         mqtt_subscribe(fd, cmd_topic, 1);
         mqtt_subscribe(fd, dashboard_topic, 2);
         mqtt_subscribe(fd, cameras_topic, 3);
+        mqtt_subscribe(fd, upd_set_topic, 4);
+        publish_update_check_state(fd, cfg.mac_norm);
 
         time_t last_telem = 0, last_ping = time(nullptr);
         bool ok = true;
@@ -927,6 +1001,8 @@ static void* mqtt_thread_fn(void*) {
                     if (pkt.topic == cmd_topic) handle_cmd(pkt.payload);
                     else if (pkt.topic == dashboard_topic) handle_dashboard_set(pkt.payload);
                     else if (pkt.topic == cameras_topic)   handle_cameras_set(pkt.payload);
+                    else if (pkt.topic == upd_set_topic)
+                        handle_update_check_set(fd, cfg.mac_norm, pkt.payload);
                 }
                 // type 0x9 = SUBACK, 0xD = PINGRESP — ignore
             }

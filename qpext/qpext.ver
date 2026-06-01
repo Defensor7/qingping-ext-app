@@ -1,7 +1,21 @@
+GLIBC_2.17 {
+    # Empty placeholder so we can `.symver qpext_dlsym_impl,dlsym@@GLIBC_2.17`
+    # below — the linker insists every version mentioned by `.symver` be
+    # declared in the version script.
+};
+
 Qt_5 {
     global:
+        # Qt internals we override to redirect QML loading and to capture
+        # the airdataController QObject pointer (see qpext.cpp).
         _ZN21QQmlApplicationEngine4loadERK4QUrl;
         _ZN11QQmlContext18setContextPropertyERK7QStringP7QObject;
+
+        # NOTE: our `dlsym` override is exported separately via a
+        # `.symver qpext_dlsym_impl,dlsym@@GLIBC_2.17` directive in
+        # qpext.cpp so it carries the exact GLIBC version libQt5Network's
+        # PLT relocation requests; it doesn't need to appear here.
+
     local:
         *;
 };
