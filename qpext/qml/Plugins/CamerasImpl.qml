@@ -1,26 +1,48 @@
 // Bump revision + save to trigger hot-reload via Cameras.qml.
+//
+// Renders a SINGLE camera tile — multi-camera was deprecated when each
+// camera became its own user-defined tab. The impl picks its camera out
+// of /data/qpext/cameras.json by matching the entry's `tab_id` against
+// our `tabId` property (forwarded by Cameras.qml's shell).
 import QtQuick 2.9
 import QtQuick.Layouts 1.3
-import QtQuick.Controls 2.0
 import Qing.Controls 1.0
 import "."   // for MdiIcon (one dir up via ../, but we're already in Plugins/)
 
 Item {
     id: impl
     anchors.fill: parent
-    readonly property int revision: 5
+    readonly property int revision: 6
 
     // Set by Cameras.qml shell.  active=false → shim SIGSTOPs gst-launch.
     property bool active: false
-    // When loaded as a PathView delegate we leave 72 px for the device's
-    // HeaderBar.  When pushed onto the stack we use the whole screen.
+    // Loaded inside a PathView delegate (currently always true; we keep
+    // the flag for the legacy push-onto-stack code path).
     property bool inPathView: false
     readonly property int topGap: impl.inPathView ? 72 : 0
+    // Per-tab identity, forwarded by Cameras.qml from MainPage's delegate.
+    property string tabId: ""
+    property string tabName: ""
     function restore() {}
 
     // --- config (cameras.json, hot-reloaded) -----------------------------
+    // We hold the FULL cameras list and pick our own entry reactively from
+    // (cameras, tabId). Keeps the impl trivially robust to tabId arriving
+    // after the first cameras.json read.
     property var cameras: []
     property string camerasSig: ""
+
+    function _camForTab() {
+        if (!impl.tabId) return null
+        for (var i = 0; i < impl.cameras.length; ++i) {
+            var c = impl.cameras[i]
+            if (c && c.tab_id === impl.tabId) return c
+        }
+        return null
+    }
+    property var cam: _camForTab()
+    onTabIdChanged: impl.cam = _camForTab()
+    onCamerasChanged: impl.cam = _camForTab()
 
     function loadCameras() {
         var xhr = new XMLHttpRequest()
@@ -36,7 +58,9 @@ Item {
             try {
                 var parsed = JSON.parse(t)
                 impl.cameras = parsed.cameras || []
-                console.log("[qpext-cam] cameras.json: " + impl.cameras.length + " cameras")
+                console.log("[qpext-cam] cameras.json: " + impl.cameras.length +
+                            " cameras (tabId=" + impl.tabId + " match=" +
+                            (impl._camForTab() ? "yes" : "no") + ")")
             } catch (e) {
                 console.log("[qpext-cam] parse error:", e)
             }
@@ -48,7 +72,7 @@ Item {
 
     // --- CPU load: poll /proc/stat once per second, compute %busy ----------
     property real cpuPct: 0
-    property var _lastCpu: null     // {total, idle}
+    property var _lastCpu: null
     function pollCpu() {
         var xhr = new XMLHttpRequest()
         xhr.open("GET", "file:///proc/stat")
@@ -56,14 +80,13 @@ Item {
             if (xhr.readyState !== XMLHttpRequest.DONE) return
             var t = xhr.responseText
             if (!t) return
-            // First line: "cpu  user nice system idle iowait irq softirq steal guest guest_nice"
             var nl = t.indexOf("\n")
             var first = (nl >= 0) ? t.substring(0, nl) : t
             var parts = first.split(/\s+/).slice(1)
             if (parts.length < 5) return
             var total = 0
             for (var i = 0; i < parts.length; ++i) total += parseInt(parts[i]) || 0
-            var idle = (parseInt(parts[3]) || 0) + (parseInt(parts[4]) || 0)  // idle + iowait
+            var idle = (parseInt(parts[3]) || 0) + (parseInt(parts[4]) || 0)
             if (impl._lastCpu) {
                 var dt = total - impl._lastCpu.total
                 var di = idle  - impl._lastCpu.idle
@@ -93,6 +116,12 @@ Item {
             onTriggered: pollTemp() }
 
     // --- heartbeat to shim while tab is visible -------------------------
+    // The shim gates gst-launch decoding on this heartbeat (cam_thread
+    // SIGSTOPs pipelines without a recent heartbeat). Each per-tab impl
+    // sends its own beats; the shim treats any heartbeat as "screen is
+    // showing a camera" — fine, because we only want decoding for
+    // whichever camera tab the user is currently looking at, and only one
+    // tab can have active=true at a time.
     Timer {
         interval: 1500
         running: impl.active
@@ -112,22 +141,24 @@ Item {
             top: parent.top; topMargin: impl.topGap
         }
 
-        // No cameras configured.
+        // No camera matched our tab id (config is loading, or cameras.json
+        // is empty / mid-update). Show the tab name so the user has some
+        // visual confirmation of where they are.
         Item {
             anchors.fill: parent
-            visible: impl.cameras.length === 0
+            visible: !impl.cam
             ColumnLayout {
                 anchors.centerIn: parent
                 spacing: 12
                 QText {
-                    text: "No cameras"
+                    text: impl.tabName || "Camera"
                     color: "white"
                     font.pixelSize: 28
                     font.bold: true
                     Layout.alignment: Qt.AlignHCenter
                 }
                 QText {
-                    text: "edit /data/qpext/cameras.json"
+                    text: "no camera configured for this tab"
                     color: "#88aacc"
                     font.pixelSize: 16
                     Layout.alignment: Qt.AlignHCenter
@@ -135,88 +166,69 @@ Item {
             }
         }
 
-        // One or many cameras.
-        SwipeView {
-            id: view
+        // The (one) camera.
+        Item {
             anchors.fill: parent
-            visible: impl.cameras.length > 0
-            currentIndex: 0
-            Repeater {
-                model: impl.cameras
-                delegate: Item {
-                    width: view.width
-                    height: view.height
-                    property var cam: modelData
+            visible: !!impl.cam
 
-                    Rectangle { anchors.fill: parent; color: "black" }
+            property real fps: (impl.cam && impl.cam.fps > 0) ? impl.cam.fps : 5
 
-                    // Single Image cycled by Timer. The shim atomically rewrites
-                    // /tmp/qpext/cam/<name>.jpg, but Qt's Image keeps the prior
-                    // pixmap until the new source has fully loaded — so we
-                    // briefly clear the source to force a re-read each tick.
-                    property real fps: cam && cam.fps > 0 ? cam.fps : 5
+            Rectangle { anchors.fill: parent; color: "black" }
 
-                    Image {
-                        id: img
-                        anchors.fill: parent
-                        fillMode: Image.PreserveAspectFit
-                        cache: false
-                        asynchronous: false
+            // Single Image cycled by Timer. The shim atomically rewrites
+            // /tmp/qpext/cam/<name>.jpg, but Qt's Image keeps the prior
+            // pixmap until the new source has fully loaded — so we briefly
+            // clear the source to force a re-read each tick.
+            Image {
+                id: img
+                anchors.fill: parent
+                fillMode: Image.PreserveAspectFit
+                cache: false
+                asynchronous: false
+            }
+
+            Timer {
+                interval: Math.max(60, Math.round(1000 / parent.fps))
+                running: !!impl.cam && impl.active
+                repeat: true
+                triggeredOnStart: true
+                onTriggered: {
+                    img.source = ""
+                    img.source = "file:///tmp/qpext/cam/" + impl.cam.name + ".jpg?" + Date.now()
+                }
+            }
+
+            // Footer with name + stats.
+            Rectangle {
+                anchors {
+                    left: parent.left; right: parent.right; bottom: parent.bottom
+                }
+                height: 38
+                color: "#80000000"
+                QText {
+                    anchors {
+                        left: parent.left; verticalCenter: parent.verticalCenter
+                        leftMargin: 14
                     }
-
-                    Timer {
-                        interval: Math.max(60, Math.round(1000 / fps))
-                        running: !!cam && impl.active
-                        repeat: true
-                        triggeredOnStart: true
-                        onTriggered: {
-                            img.source = ""
-                            img.source = "file:///tmp/qpext/cam/" + cam.name + ".jpg?" + Date.now()
-                        }
+                    text: impl.cam ? (impl.cam.label || impl.tabName || impl.cam.name || "camera") : ""
+                    color: "white"
+                    font.pixelSize: 18
+                }
+                QText {
+                    anchors {
+                        right: parent.right; verticalCenter: parent.verticalCenter
+                        rightMargin: 14
                     }
-
-                    // Footer with name.
-                    Rectangle {
-                        anchors {
-                            left: parent.left; right: parent.right; bottom: parent.bottom
-                        }
-                        height: 38
-                        color: "#80000000"
-                        QText {
-                            anchors {
-                                left: parent.left; verticalCenter: parent.verticalCenter
-                                leftMargin: 14
-                            }
-                            text: cam ? (cam.label || cam.name || "camera") : ""
-                            color: "white"
-                            font.pixelSize: 18
-                        }
-                        QText {
-                            anchors {
-                                right: parent.right; verticalCenter: parent.verticalCenter
-                                rightMargin: 14
-                            }
-                            text: (cam ? cam.fps + " fps" : "") +
-                                  "  ·  cpu " + impl.cpuPct + "%" +
-                                  "  ·  " + impl.socTempC.toFixed(0) + "°C"
-                            color: "#88aacc"
-                            font.pixelSize: 14
-                        }
-                    }
+                    text: (impl.cam ? impl.cam.fps + " fps" : "") +
+                          "  ·  cpu " + impl.cpuPct + "%" +
+                          "  ·  " + impl.socTempC.toFixed(0) + "°C"
+                    color: "#88aacc"
+                    font.pixelSize: 14
                 }
             }
         }
-
-        PageIndicator {
-            anchors {
-                bottom: parent.bottom; horizontalCenter: parent.horizontalCenter
-                bottomMargin: 50
-            }
-            count: impl.cameras.length
-            currentIndex: view.currentIndex
-            visible: impl.cameras.length > 1
-        }
     }
 
-    Component.onCompleted: console.log("[qpext-cam] CamerasImpl rev=" + impl.revision + " loaded")
+    Component.onCompleted: console.log("[qpext-cam] CamerasImpl rev=" + impl.revision +
+                                       " loaded (tabId=" + impl.tabId + ")")
 }

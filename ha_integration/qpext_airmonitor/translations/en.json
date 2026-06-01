@@ -27,15 +27,50 @@
   "options": {
     "step": {
       "init": {
-        "title": "Airmonitor App Extension dashboard",
-        "description": "Add, edit or remove widgets shown on the device's HA tab. Cameras add an RTSP tab (hidden when none configured).",
+        "title": "Airmonitor App Extension tabs",
+        "description": "Each tab is either a set of widget cards or a single RTSP camera. The integration publishes a `Show <name>` button entity per tab.",
         "menu_options": {
+          "add_tab": "Add a tab",
+          "edit_tab": "Edit a tab",
+          "remove_tab": "Remove a tab",
+          "events_menu": "Triggers (events)",
+          "finish": "Done"
+        }
+      },
+      "add_tab": {
+        "title": "New tab",
+        "data": {
+          "name": "Name",
+          "type": "Type",
+          "icon": "Show-tab button icon"
+        }
+      },
+      "edit_tab": {"title": "Pick the tab to edit", "data": {"index": "Tab"}},
+      "tab_menu": {
+        "title": "{tab_name}",
+        "description": "Editing tab `{tab_name}` ({tab_type}).",
+        "menu_options": {
+          "rename_tab": "Rename / change icon",
           "add_widget": "Add a widget",
           "edit_widget": "Edit a widget",
           "remove_widget": "Remove a widget",
-          "cameras_menu": "Cameras",
-          "events_menu": "Triggers (events)",
-          "finish": "Done"
+          "edit_camera": "Edit the camera",
+          "init": "Back"
+        }
+      },
+      "rename_tab": {
+        "title": "Rename {tab_name}",
+        "data": {"name": "New name", "icon": "Icon"}
+      },
+      "remove_tab": {"title": "Pick a tab to remove", "data": {"index": "Tab"}},
+      "edit_camera": {
+        "title": "Camera for {tab_name}",
+        "description": "Current URL: {redacted}",
+        "data": {
+          "url": "RTSP URL",
+          "label": "Label",
+          "fps": "FPS",
+          "width": "Width (px)"
         }
       },
       "add_widget": {
@@ -95,32 +130,6 @@
         }
       },
       "remove_widget": {"title": "Pick the widget to remove", "data": {"index": "Widget"}},
-      "cameras_menu": {
-        "title": "Cameras",
-        "menu_options": {
-          "add_camera": "Add a camera",
-          "edit_camera": "Edit a camera",
-          "remove_camera": "Remove a camera",
-          "init": "Back"
-        }
-      },
-      "add_camera": {
-        "title": "Add a camera",
-        "data": {
-          "name": "Name (ASCII)",
-          "url": "RTSP URL",
-          "label": "Label",
-          "fps": "FPS",
-          "width": "Width (px)"
-        }
-      },
-      "edit_camera": {"title": "Pick the camera to edit", "data": {"index": "Camera"}},
-      "edit_camera_form": {
-        "title": "Edit camera",
-        "description": "Current URL: {redacted}",
-        "data": {"name": "Name", "url": "RTSP URL", "label": "Label", "fps": "FPS", "width": "Width (px)"}
-      },
-      "remove_camera": {"title": "Pick the camera to remove", "data": {"index": "Camera"}},
       "events_menu": {
         "title": "Triggers",
         "menu_options": {
@@ -136,25 +145,31 @@
       "remove_event": {"title": "Pick a trigger to remove", "data": {"index": "Trigger"}}
     },
     "error": {
+      "name_required": "Tab name is required.",
       "data_invalid_json": "Service data must be valid JSON.",
       "data_not_object": "Service data must be a JSON object.",
-      "rtsp_only": "URL must start with rtsp://",
-      "name_taken": "A camera with this name already exists."
+      "rtsp_only": "URL must start with rtsp://"
     }
   },
   "services": {
     "republish": {
       "name": "Re-publish dashboard",
-      "description": "Re-publish current widget composition to MQTT."
+      "description": "Re-publish current tab composition to MQTT."
     }
   },
   "selector": {
+    "tab_type": {
+      "options": {
+        "widgets": "Widgets (set of cards)",
+        "camera": "Camera (single RTSP feed)"
+      }
+    },
     "widget_type": {
       "options": {
         "sensor": "Sensor (read-only)",
         "switch": "Switch (toggle)",
         "light": "Light (toggle + brightness)",
-        "climate": "Climate (temp + setpoint)",
+        "climate": "Climate (temp + setpoint + on/off)",
         "media_player": "Media player",
         "cover": "Cover",
         "script": "Script",

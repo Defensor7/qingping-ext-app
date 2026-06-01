@@ -1,13 +1,23 @@
 // Thin wrapper that polls CamerasImpl.qml on disk and reloads on change.
 // Same hot-reload pattern as Extension.qml.
+//
+// Each user-defined camera tab gets its own Cameras shell instance; the
+// PathView delegate in MainPage.qml binds tabId / tabName / isVisualCurrent
+// onto this shell, which forwards them to the impl. The impl uses tabId to
+// pick the matching entry out of cameras.json (cameras now carry tab_id).
 import QtQuick 2.9
 import Qing.Controls 1.0
 
 Item {
     id: shell
-    objectName: "qpextCamerasShell"   // marker used by MainPage.qml delegate Binding
+    objectName: "qpextCamerasShell"   // marker used by MainPage.qml delegate Bindings
     implicitWidth: parent ? parent.width : 720
     implicitHeight: parent ? parent.height : 720
+
+    // Forwarded by MainPage.qml's delegate Bindings (see objectName above).
+    property string tabId: ""
+    property string tabName: ""
+
     function restore() {
         if (loader.item && typeof loader.item.restore === "function")
             loader.item.restore()
@@ -22,9 +32,7 @@ Item {
     property bool pathViewMode: parent && parent.PathView &&
                                 parent.PathView.view !== null
     // Set by the PathView delegate's Binding (MainPage.qml). Tracks whether
-    // THIS delegate is the one visually centered. PathView.isCurrentItem can't
-    // be used because the visual current is (PathView.currentIndex + 1) mod n
-    // due to the off-by-one in the PathLine geometry — see NOTES.md.
+    // THIS delegate is the one visually centered.
     property bool isVisualCurrent: false
     property bool active: !pathViewMode || isVisualCurrent
 
@@ -36,6 +44,8 @@ Item {
             console.log("[qpext] CamerasImpl.qml load error")
         Binding { target: loader.item; property: "active";     value: shell.active;       when: loader.item }
         Binding { target: loader.item; property: "inPathView"; value: shell.pathViewMode; when: loader.item }
+        Binding { target: loader.item; property: "tabId";      value: shell.tabId;        when: loader.item }
+        Binding { target: loader.item; property: "tabName";    value: shell.tabName;      when: loader.item }
     }
 
 

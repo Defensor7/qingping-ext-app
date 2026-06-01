@@ -1,5 +1,10 @@
 // Bumping revision + saving triggers hot-reload through Extension.qml.
-// Renders widgets.json as a grid; each widget type lives in widgets/<Type>.qml.
+// Renders widgets.json's `tabs[]` for a single tab (selected by `tabId`)
+// as a grid; each widget type lives in widgets/<Type>.qml.
+//
+// MainPage.qml instantiates one Extension/ExtensionImpl pair per user
+// widgets-tab; tabId / tabName are forwarded by the PathView delegate via
+// Bindings, so this file's job is just "find my slice + draw it".
 import QtQuick 2.9
 import QtQuick.Layouts 1.3
 import Qing.Styles 1.0
@@ -8,12 +13,16 @@ import Qing.Controls 1.0
 Item {
     id: impl
     anchors.fill: parent
-    readonly property int revision: 20
+    readonly property int revision: 21
     readonly property int topGap: 72
     readonly property int widgetHeight: 180
-    // Loaded once on creation from /data/qpext/version.txt, which deploy.sh
-    // refreshes from `version.sh` (git describe) on every push.
     property string version: ""
+
+    // Set by Extension.qml's Binding from the shell, which in turn is set by
+    // MainPage.qml's PathView delegate. Empty on the first paint until the
+    // bindings settle, so we tolerate "no match" gracefully.
+    property string tabId: ""
+    property string tabName: ""
 
     function restore() {}
 
@@ -26,8 +35,6 @@ Item {
     }
 
     // --- HA credentials (user-managed, /data/qpext/ha.json) ---------------
-    // Used only for outgoing REST service-calls. State pull happens on the
-    // shim side over WebSocket; QML reads /data/qpext/state.json (below).
     property var haConfig: ({ base_url: "", token: "" })
     property string haConfigSig: ""
 
@@ -48,11 +55,29 @@ Item {
         xhr.send()
     }
 
-    // --- dashboard composition (HA-integration-managed, /data/qpext/widgets.json)
-    // Pure {widgets, events} object; written by qpext_mqtt.cpp on every
-    // qpext/<mac>/dashboard/set retained message. No ha section any more.
-    property var config: ({ widgets: [] })
+    // --- dashboard composition --------------------------------------------
+    // `config` is the full {tabs, events} object from widgets.json. We compute
+    // `widgets` reactively from config + impl.tabId: locate the tab with id ==
+    // impl.tabId and use its `widgets[]`. Legacy: when no tabs are present
+    // (older payload), fall back to top-level `widgets` so we don't render
+    // a blank screen on a stale config.
+    property var config: ({ tabs: [], widgets: [] })
     property string configSig: ""
+
+    function _widgetsForTab() {
+        var tabs = config.tabs || []
+        for (var i = 0; i < tabs.length; ++i) {
+            if (tabs[i] && tabs[i].id === impl.tabId)
+                return tabs[i].widgets || []
+        }
+        if ((!tabs || tabs.length === 0) && impl.tabId === "ha")
+            return config.widgets || []
+        return []
+    }
+
+    property var widgets: _widgetsForTab()
+    onTabIdChanged: impl.widgets = _widgetsForTab()
+    onConfigChanged: impl.widgets = _widgetsForTab()
 
     function loadConfig(silent) {
         var xhr = new XMLHttpRequest()
@@ -67,7 +92,9 @@ Item {
             impl.configSig = sig
             try {
                 impl.config = JSON.parse(t)
-                console.log("[qpext] widgets.json: " + (impl.config.widgets || []).length + " widgets")
+                console.log("[qpext] widgets.json: " + ((impl.config.tabs || []).length) +
+                            " tabs (tab " + impl.tabId + " → " +
+                            impl._widgetsForTab().length + " widgets)")
             } catch (e) {
                 if (!silent) console.log("[qpext] widgets.json parse error:", e)
             }
@@ -129,13 +156,10 @@ Item {
     Timer { interval: 250; running: true; repeat: true; onTriggered: pollState() }
     Timer { interval: 1500; running: true; repeat: true; triggeredOnStart: true
             onTriggered: loadConfig(true) }
-    // ha.json changes less often (only on install / dev/switch-device.sh),
-    // a slow poll is enough — picks up token rotation without restart.
     Timer { interval: 5000; running: true; repeat: true; triggeredOnStart: true
             onTriggered: loadHaConfig() }
 
     // --- helpers for widgets --------------------------------------------
-    // Resolve component path. snake_case → CamelCase, so "media_player" → "MediaPlayer.qml".
     function widgetSource(type) {
         if (!type) return "widgets/Sensor.qml"
         var parts = ("" + type).split("_")
@@ -160,7 +184,9 @@ Item {
             Layout.fillWidth: true
             QText {
                 Layout.fillWidth: true
-                text: "Home Assistant"
+                // Show the per-tab display name. Falls back to "Home Assistant"
+                // when the tab name hasn't loaded yet (Bindings settle async).
+                text: impl.tabName || "Home Assistant"
                 color: "white"
                 font.pixelSize: 28
                 font.bold: true
@@ -184,18 +210,18 @@ Item {
 
         QText {
             Layout.fillWidth: true
-            visible: (config.widgets || []).length === 0 &&
+            visible: (impl.widgets || []).length === 0 &&
                      haConfig.base_url && haConfig.token &&
                      haConfig.token.indexOf("PUT_") !== 0
-            text: "no widgets configured — add them via the qpext_airmonitor integration in HA"
+            text: "no widgets in this tab — add some via the qpext_airmonitor integration"
             wrapMode: Text.WrapAnywhere
             color: "#88aacc"
             font.pixelSize: 13
         }
 
         // Wrapper: the Flickable is inset on the right to make a dedicated
-        // gutter for the scroll indicator. The indicator is a SIBLING of the
-        // Flickable (otherwise it'd be a child of contentItem and scroll along).
+        // gutter for the scroll indicator (sibling of the Flickable so it
+        // doesn't scroll with the content).
         Item {
             id: dashboardArea
             Layout.fillWidth: true
@@ -221,7 +247,7 @@ Item {
                     rowSpacing: 10
 
                     Repeater {
-                        model: config.widgets || []
+                        model: impl.widgets || []
                         delegate: Loader {
                             Layout.fillWidth: true
                             Layout.preferredHeight: impl.widgetHeight
@@ -245,8 +271,6 @@ Item {
                 }
             }
 
-            // Scroll indicator track + thumb. Lives outside the Flickable so it
-            // doesn't scroll with the content.
             Rectangle {
                 id: scrollTrack
                 anchors.right: parent.right
@@ -288,7 +312,7 @@ Item {
         xhr.send()
     }
     Component.onCompleted: {
-        console.log("[qpext] ExtensionImpl.qml rev=" + impl.revision + " loaded")
+        console.log("[qpext] ExtensionImpl.qml rev=" + impl.revision + " loaded (tabId=" + impl.tabId + ")")
         loadVersion()
         loadHaConfig()
         loadConfig(false)

@@ -27,15 +27,60 @@
   "options": {
     "step": {
       "init": {
-        "title": "Airmonitor App Extension dashboard",
-        "description": "Add, edit or remove widgets shown on the device's HA tab. Triggers map HA events to a tab switch on the device. Cameras add an RTSP-based tab (hidden when no cameras are configured).",
+        "title": "Airmonitor App Extension tabs",
+        "description": "Tabs you create here show up on the device's PathView. Each tab is either a set of widget cards or a single RTSP camera. For every tab the integration also publishes a `Show <name>` button entity so the device can be commanded to switch to that tab from any HA automation or dashboard.",
         "menu_options": {
+          "add_tab": "Add a tab",
+          "edit_tab": "Edit a tab",
+          "remove_tab": "Remove a tab",
+          "events_menu": "Triggers (events)",
+          "finish": "Done"
+        }
+      },
+      "add_tab": {
+        "title": "New tab",
+        "description": "A *widgets* tab holds any combination of sensor/switch/light/etc. cards. A *camera* tab holds a single RTSP feed (one camera per tab). Both types get a HA `Show <name>` button entity for tab navigation.",
+        "data": {
+          "name": "Name",
+          "type": "Type",
+          "icon": "Icon for the Show-tab HA button"
+        }
+      },
+      "edit_tab": {
+        "title": "Pick the tab to edit",
+        "data": {"index": "Tab"}
+      },
+      "tab_menu": {
+        "title": "{tab_name}",
+        "description": "Editing tab `{tab_name}` ({tab_type}).",
+        "menu_options": {
+          "rename_tab": "Rename / change icon",
           "add_widget": "Add a widget",
           "edit_widget": "Edit a widget",
           "remove_widget": "Remove a widget",
-          "cameras_menu": "Cameras",
-          "events_menu": "Triggers (events)",
-          "finish": "Done"
+          "edit_camera": "Edit the camera",
+          "init": "Back"
+        }
+      },
+      "rename_tab": {
+        "title": "Rename {tab_name}",
+        "data": {
+          "name": "New name",
+          "icon": "Icon"
+        }
+      },
+      "remove_tab": {
+        "title": "Pick a tab to remove",
+        "data": {"index": "Tab"}
+      },
+      "edit_camera": {
+        "title": "Camera for {tab_name}",
+        "description": "Current URL: {redacted}\n\nRetype the full RTSP URL to change credentials; leave as-is otherwise. `width` is the JPEG width fed to the device — lower → faster encode. `fps` is the target frame rate.",
+        "data": {
+          "url": "RTSP URL (rtsp://user:pass@host:port/path)",
+          "label": "Display label (optional)",
+          "fps": "FPS",
+          "width": "Width (px)"
         }
       },
       "add_widget": {
@@ -120,46 +165,6 @@
           "index": "Widget"
         }
       },
-      "cameras_menu": {
-        "title": "Cameras",
-        "description": "Cameras feed into the device's RTSP tab via gst-launch + Rockchip MPP hw decode. The tab is hidden entirely when no cameras are configured.",
-        "menu_options": {
-          "add_camera": "Add a camera",
-          "edit_camera": "Edit a camera",
-          "remove_camera": "Remove a camera",
-          "init": "Back"
-        }
-      },
-      "add_camera": {
-        "title": "Add a camera",
-        "description": "RTSP URL with embedded credentials. Width is the JPEG width (lower → faster encode); fps is the target frame rate. Name must be unique and is used as the on-device filename for snapshots.",
-        "data": {
-          "name": "Name (ASCII, no spaces)",
-          "url": "RTSP URL (rtsp://user:pass@host:port/path)",
-          "label": "Display label (optional)",
-          "fps": "FPS",
-          "width": "Width (px)"
-        }
-      },
-      "edit_camera": {
-        "title": "Pick the camera to edit",
-        "data": {"index": "Camera"}
-      },
-      "edit_camera_form": {
-        "title": "Edit camera",
-        "description": "Current URL: {redacted}\n\nRetype the full RTSP URL to change credentials; leave as-is otherwise.",
-        "data": {
-          "name": "Name",
-          "url": "RTSP URL",
-          "label": "Display label",
-          "fps": "FPS",
-          "width": "Width (px)"
-        }
-      },
-      "remove_camera": {
-        "title": "Pick the camera to remove",
-        "data": {"index": "Camera"}
-      },
       "events_menu": {
         "title": "Triggers",
         "description": "When an HA entity changes state (typically an `automation` firing), switch the device to a given tab.",
@@ -184,25 +189,31 @@
       }
     },
     "error": {
+      "name_required": "Tab name is required.",
       "data_invalid_json": "Service data must be valid JSON.",
       "data_not_object": "Service data must be a JSON object (e.g. {\"entity_id\": \"…\"}).",
-      "rtsp_only": "URL must start with rtsp://",
-      "name_taken": "A camera with this name already exists."
+      "rtsp_only": "URL must start with rtsp://"
     }
   },
   "services": {
     "republish": {
       "name": "Re-publish dashboard",
-      "description": "Re-publish the current widget composition to MQTT (useful after the device was wiped or the broker lost its retained message)."
+      "description": "Re-publish the current tab composition to MQTT (useful after the device was wiped or the broker lost its retained message)."
     }
   },
   "selector": {
+    "tab_type": {
+      "options": {
+        "widgets": "Widgets (set of cards)",
+        "camera": "Camera (single RTSP feed)"
+      }
+    },
     "widget_type": {
       "options": {
         "sensor": "Sensor (read-only)",
         "switch": "Switch (toggle)",
         "light": "Light (toggle + brightness)",
-        "climate": "Climate (temp + setpoint)",
+        "climate": "Climate (temp + setpoint + on/off)",
         "media_player": "Media player",
         "cover": "Cover",
         "script": "Script",

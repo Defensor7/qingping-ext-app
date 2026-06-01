@@ -608,13 +608,14 @@ static void publish_discovery(int fd, const MqttCfg& c) {
         mqtt_publish(fd, cfg_topic, payload, true);
     };
 
-    // One button per visible tab in MainPage.qml's PathView model.
+    // One button per stock tab in MainPage.qml's PathView. User-defined
+    // tabs (widgets / camera) get their own per-tab discovery buttons
+    // published by the qpext_airmonitor integration — see
+    // ha_integration/qpext_airmonitor/__init__.py::_publish_tab_buttons.
     tab_button("show_air",      "Show air data",     "airDatasView",      "mdi:weather-cloudy");
     tab_button("show_summary",  "Show summary",      "summaryView",       "mdi:chart-line");
     tab_button("show_settings", "Show settings",     "settingView",       "mdi:cog");
     tab_button("show_app",      "Show app",          "appView",           "mdi:apps");
-    tab_button("show_ha",       "Show HA dashboard", "qpextView",         "mdi:home-assistant");
-    tab_button("show_camera",   "Show camera",       "qpextCamerasView",  "mdi:cctv");
 
     // Button: reboot device. uses HA "button" component.
     {

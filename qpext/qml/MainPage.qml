@@ -1,5 +1,11 @@
-// Mirror of qrc:/Main/MainPage.qml with one extra ListElement appended to
-// the page model. Header/Notification dir-imports rewritten to qrc:/.
+// Mirror of qrc:/Main/MainPage.qml with extra user-configurable tabs appended
+// to the page model. Each user tab is built from /data/qpext/widgets.json's
+// `tabs[]` array (see ha_integration/qpext_airmonitor/tabs.py for the schema).
+//
+// A widgets-tab tab carries a slice of widget cards, a camera-tab tab carries
+// a single RTSP feed. Both are addressed by id in MQTT switch_tab payloads
+// (PathView entry name = "qpext_<tab.id>"). The header on a user tab shows
+// the tab's display name in place of the stock "Home Assistant" string.
 import QtQuick 2.0
 import QtQuick.Controls 2.0
 import Qing.Styles 1.0
@@ -105,36 +111,38 @@ Item {
                     ListElement {
                         name: "airDatasView"
                         source: "qrc:/Main/Views/AirDatas/AirDatasView.qml"
+                        qpextTab: false
+                        tabId: ""
+                        tabName: ""
+                        tabType: ""
                     }
                     ListElement {
                         name: "settingView"
                         source: "qrc:/Main/Views/Setting/SettingView.qml"
+                        qpextTab: false
+                        tabId: ""
+                        tabName: ""
+                        tabType: ""
                     }
                     ListElement {
                         name: "appView"
                         source: "qrc:/Main/Views/App/AppView.qml"
+                        qpextTab: false
+                        tabId: ""
+                        tabName: ""
+                        tabType: ""
                     }
-                    // <<< qpext custom tabs >>>
-                    ListElement {
-                        name: "qpextView"
-                        source: "file:///data/qpext/Plugins/Extension.qml"
-                    }
-                    // qpextCamerasView is appended dynamically by
-                    // pollCameras() below when /data/qpext/cameras.json has
-                    // at least one camera entry. If no cameras are configured
-                    // the tab simply doesn't exist — switch_tab MQTT commands
-                    // targeting it log "not in model" and no-op.
+                    // User-defined tabs (widgets | camera) are appended by
+                    // pollTabs() below from /data/qpext/widgets.json.
                     Component.onCompleted: {
                         if (!global.isShowAppView || (global.product === Global.PROD_HAIER)) {
                             removePage("appView");
                         }
                         if (datetimeManager.isInitialized) {
-                            insertPage("airDatasView", "summaryView", "qrc:/Main/Views/Summary/SummaryView.qml");
+                            insertPage("airDatasView", "summaryView",
+                                       "qrc:/Main/Views/Summary/SummaryView.qml");
                         }
-                        // qpext: don't restore the saved index — it desyncs
-                        // PathView's currentIndex from its visual offset and
-                        // breaks programmatic switching from MQTT/tab_event.
-                        // Always start on the first tab.
+                        // qpext: don't restore the saved index — start at 0.
                         view.currentIndex = 0
                         global.currentMainPageIndex = 0
                     }
@@ -144,24 +152,38 @@ Item {
                     Loader {
                         id: loader
                         property int modelIndex: index
-                        // The visually-centered delegate is the one at
-                        // (currentIndex + 1) mod count, not currentIndex itself —
-                        // see PathView off-by-one note in NOTES.md. Cameras.qml's
-                        // `active` (which gates the frame Timer + heartbeat to
-                        // the shim) is driven from here.
+                        // The visually-centered delegate is (currentIndex + 1)
+                        // mod count — PathView off-by-one (NOTES.md).
                         property bool isVisualCurrent: view
                             ? ((view.currentIndex + 1) % view.count === modelIndex)
                             : false
                         width: view.width
                         height: view.height
                         source: model.source
+                        // Per-tab properties forwarded to the user-tab impl.
+                        // For static qrc:// tabs the bindings stay inert
+                        // because the target items don't declare these props
+                        // (Binding's `when` is gated on objectName below).
+                        Binding {
+                            target: loader.item
+                            property: "tabId"
+                            value: model.tabId
+                            when: loader.item !== null &&
+                                  (loader.item.objectName === "qpextExtensionShell" ||
+                                   loader.item.objectName === "qpextCamerasShell")
+                        }
+                        Binding {
+                            target: loader.item
+                            property: "tabName"
+                            value: model.tabName
+                            when: loader.item !== null &&
+                                  (loader.item.objectName === "qpextExtensionShell" ||
+                                   loader.item.objectName === "qpextCamerasShell")
+                        }
                         Binding {
                             target: loader.item
                             property: "isVisualCurrent"
                             value: loader.isVisualCurrent
-                            // Only delegates that opt in via objectName accept
-                            // this — keeps QML from warning on qrc-shipped views
-                            // that don't have the property.
                             when: loader.item !== null &&
                                   loader.item.objectName === "qpextCamerasShell"
                         }
@@ -193,7 +215,6 @@ Item {
                     }
                 }
                 onOffsetChanged: {
-                    // Throttle: log only when offset is near an integer (i.e. snap completed).
                     var nearInt = Math.abs(offset - Math.round(offset)) < 0.05
                     if (nearInt && !flicking && !moving) {
                         var it = model.get(currentIndex)
@@ -223,7 +244,9 @@ Item {
         }
         for (var j = 0; j < model.count; ++j) {
             if (model.get(j).name === target) {
-                model.insert(j + 1, { "name": name, "source": source })
+                model.insert(j + 1, { "name": name, "source": source,
+                                      "qpextTab": false, "tabId": "",
+                                      "tabName": "", "tabType": "" })
                 break;
             }
         }
@@ -236,9 +259,6 @@ Item {
             }
         }
     }
-    // Debug helper: log all model entries with their indices, plus current
-    // view state. Called on load and on every tab_event so we can diagnose
-    // ci/offset/visual desync.
     function logModelState(label) {
         if (!view || !view.model) { console.log("[qpext] " + label + " no view/model"); return }
         var m = view.model
@@ -265,12 +285,9 @@ Item {
             return
         }
         if (view.flicking || view.moving) view.cancelFlick()
-        // The PathView path is `PathLine startX=-w/2 relativeX=w*count` — the
-        // current item snaps at startX which is OFF-SCREEN LEFT, so the item
-        // VISUALLY in the center is the next one along the path. Visual index
-        // = (currentIndex + 1) mod n. The page indicator above already
-        // compensates with the same +1 offset. To land visually on tab j we
-        // therefore set currentIndex = (j - 1 + n) mod n.
+        // PathView startX=-w/2 puts the model's currentIndex off-screen left;
+        // the VISUAL center is (currentIndex+1) mod n. To land visually on j
+        // we set currentIndex = (j - 1 + n) mod n.
         var targetCI = (j - 1 + n) % n
         var cur = view.currentIndex
         logModelState("before switch -> " + name + " (j=" + j + " → targetCI=" + targetCI + ")")
@@ -289,51 +306,95 @@ Item {
         doSwitchByName(name)
         return true
     }
-    // <<< qpext: shim writes /tmp/qpext/tab_event when an HA trigger fires.
-    // We poll the file every 250ms and switch to the named page on a new ts.
-    property int qpextLastTs: 0
-    // qpext: cameras.json may be empty / missing — then qpextCamerasView
-    // simply isn't in the PathView. Poll it and add/remove the entry as
-    // the HA integration adds or removes cameras via MQTT.
-    property string camerasSig: ""
-    function pollCameras() {
+
+    // --- widgets.json polling: keep PathView model in sync with tabs[] ----
+    property string tabsSig: ""
+
+    // The single source of truth for what a user-tab looks like in the model.
+    // Stock qrc tabs use qpextTab=false; user tabs use qpextTab=true plus
+    // tabId / tabName / tabType so the delegate Bindings can forward them
+    // to ExtensionImpl / CamerasImpl.
+    function _buildUserEntry(t) {
+        var isCamera = (t.type === "camera")
+        return {
+            "name":     "qpext_" + t.id,
+            "source":   isCamera
+                ? "file:///data/qpext/Plugins/Cameras.qml"
+                : "file:///data/qpext/Plugins/Extension.qml",
+            "qpextTab": true,
+            "tabId":    t.id,
+            "tabName":  t.name || t.id,
+            "tabType":  t.type || "widgets"
+        }
+    }
+
+    function _userTabIndices() {
+        var out = []
+        for (var i = 0; i < model.count; ++i)
+            if (model.get(i).qpextTab) out.push(i)
+        return out
+    }
+
+    function syncTabs(tabs) {
+        // Reuse existing user-tab slots in place where possible so the
+        // PathView's currentIndex doesn't jump every refresh; only add /
+        // remove the tail when the count differs.
+        var existing = _userTabIndices()
+        var visualBefore = (view.currentIndex + 1) % model.count
+
+        // Pass 1: update in place / append new.
+        for (var i = 0; i < tabs.length; ++i) {
+            var entry = _buildUserEntry(tabs[i])
+            if (i < existing.length) {
+                var idx = existing[i]
+                var cur = model.get(idx)
+                if (cur.name !== entry.name ||
+                    cur.source !== entry.source ||
+                    cur.tabName !== entry.tabName ||
+                    cur.tabType !== entry.tabType ||
+                    cur.tabId !== entry.tabId) {
+                    model.set(idx, entry)
+                }
+            } else {
+                model.append(entry)
+            }
+        }
+        // Pass 2: drop any extras from the tail.
+        if (tabs.length < existing.length) {
+            for (var k = existing.length - 1; k >= tabs.length; --k) {
+                var deadIdx = existing[k]
+                // If we're about to remove the visually-current item, snap
+                // first so PathView doesn't end up anchored on a missing one.
+                if (visualBefore === deadIdx) view.currentIndex = 0
+                model.remove(deadIdx)
+            }
+        }
+        console.log("[qpext] syncTabs: " + tabs.length + " user tab(s), model.count=" + model.count)
+    }
+
+    function pollTabs() {
         var xhr = new XMLHttpRequest()
-        xhr.open("GET", "file:///data/qpext/cameras.json")
+        xhr.open("GET", "file:///data/qpext/widgets.json")
         xhr.onreadystatechange = function() {
             if (xhr.readyState !== XMLHttpRequest.DONE) return
             var t = xhr.responseText || ""
             var sig = t.length + ":" + t.substring(0, 48)
-            if (sig === control.camerasSig) return
-            control.camerasSig = sig
-            var n = 0
-            try { n = (JSON.parse(t).cameras || []).length } catch (e) {}
-            var existing = -1
-            for (var i = 0; i < model.count; ++i) {
-                if (model.get(i).name === "qpextCamerasView") { existing = i; break }
-            }
-            if (n > 0 && existing < 0) {
-                model.append({"name": "qpextCamerasView",
-                              "source": "file:///data/qpext/Plugins/Cameras.qml"})
-                console.log("[qpext] cameras.json: " + n + " entries → adding camera tab")
-            } else if (n === 0 && existing >= 0) {
-                // If user was on the camera tab, snap to airDatasView first
-                // so the PathView's snap point isn't pointing at a removed item.
-                if (view.currentIndex === (existing - 1 + model.count) % model.count)
-                    view.currentIndex = 0
-                model.remove(existing)
-                console.log("[qpext] cameras.json: empty → removing camera tab")
-            }
+            if (sig === control.tabsSig) return
+            control.tabsSig = sig
+            var tabs = []
+            try {
+                var parsed = JSON.parse(t)
+                tabs = (parsed && parsed.tabs) || []
+            } catch (e) {}
+            syncTabs(tabs)
         }
         xhr.send()
     }
-    Timer {
-        interval: 1500
-        running: true
-        repeat: true
-        triggeredOnStart: true
-        onTriggered: pollCameras()
-    }
+    Timer { interval: 1500; running: true; repeat: true; triggeredOnStart: true
+            onTriggered: pollTabs() }
 
+    // --- tab_event poll: shim writes /tmp/qpext/tab_event on HA cmd. ------
+    property int qpextLastTs: 0
     Timer {
         interval: 250
         running: true
@@ -362,7 +423,8 @@ Item {
         target: datetimeManager
         function onIsInitializedChanged() {
             if (datetimeManager.isInitialized) {
-                insertPage("airDatasView", "summaryView", "qrc:/Main/Views/Summary/SummaryView.qml");
+                insertPage("airDatasView", "summaryView",
+                           "qrc:/Main/Views/Summary/SummaryView.qml");
             }
         }
     }
