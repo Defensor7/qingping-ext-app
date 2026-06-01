@@ -47,6 +47,20 @@
 // Logging hook (defined in qpext.cpp).
 extern "C" void qplog_c(const char* fmt, ...);
 
+// sleep() variant that ignores EINTR. The host QingSnow2App process forks
+// short-lived children (wpa_cli, miio_client, analyze_noise.sh, …); the
+// resulting SIGCHLD reaches our background threads and cuts plain sleep()
+// short. Without this guard the retry loops spun at ~kHz on extended
+// network outages, burning the SoC enough that QingSnow2App's own
+// watchdog feed missed its deadline and the app self-exited. The
+// script-level watchdog then triggered a hard `reboot -f` once it saw
+// >4 awakens within 60 s.
+static void qpext_sleep_safe(unsigned seconds) {
+    struct timespec req{(time_t)seconds, 0}, rem{};
+    while (nanosleep(&req, &rem) < 0 && errno == EINTR)
+        req = rem;
+}
+
 // ---------------------------------------------------------------------------
 // Tiny utilities
 // ---------------------------------------------------------------------------
@@ -539,7 +553,7 @@ static void* ha_thread_fn(void*) {
     // Wait until widgets.json exists with a non-placeholder token.
     HaConfig cfg;
     while (!parse_config(cfg)) {
-        sleep(2);
+        qpext_sleep_safe(2);
     }
     qplog_c("[qpext-ha] connecting to %s:%d (path=%s)", cfg.host.c_str(), cfg.port, cfg.path.c_str());
 
@@ -549,11 +563,11 @@ static void* ha_thread_fn(void*) {
         c.fd = tcp_connect(cfg.host.c_str(), cfg.port);
         if (c.fd < 0) {
             qplog_c("[qpext-ha] tcp_connect failed: %s, retry in %d s", strerror(errno), backoff);
-            sleep(backoff); backoff = backoff < 30 ? backoff * 2 : 30; continue;
+            qpext_sleep_safe(backoff); backoff = backoff < 30 ? backoff * 2 : 30; continue;
         }
         if (!ws_handshake(c, cfg.host.c_str(), cfg.port, cfg.path.c_str())) {
             qplog_c("[qpext-ha] ws_handshake failed");
-            close(c.fd); sleep(backoff); backoff = backoff < 30 ? backoff * 2 : 30; continue;
+            close(c.fd); qpext_sleep_safe(backoff); backoff = backoff < 30 ? backoff * 2 : 30; continue;
         }
         backoff = 1;
         qplog_c("[qpext-ha] ws connected, awaiting auth_required");
@@ -598,7 +612,7 @@ static void* ha_thread_fn(void*) {
 
         close(c.fd);
         qplog_c("[qpext-ha] disconnected after %d msgs, retry in %d s", msg_count, backoff);
-        sleep(backoff);
+        qpext_sleep_safe(backoff);
         backoff = backoff < 30 ? backoff * 2 : 30;
     }
     return nullptr;
@@ -834,13 +848,13 @@ static void* cam_thread_fn(void*) {
                 qplog_c("[qpext-cam] pid=%d ('%s') exited (lived %lds), respawn in %ds",
                         (int)cp.pid, cp.spec.name.c_str(),
                         (long)lived, (lived < 3 ? 3 : 1));
-                if (lived < 3) sleep(3);
+                if (lived < 3) qpext_sleep_safe(3);
                 cp.pid = spawn_camera(cp.spec);
                 cp.started_at = time(nullptr);
                 cp.paused = false;
             }
         }
-        sleep(1);
+        qpext_sleep_safe(1);
     }
     return nullptr;
 }
@@ -871,7 +885,7 @@ static void* cam_snapshot_thread_fn(void*) {
     std::map<std::string, time_t> last_mtime;   // per-camera
     for (;;) {
         DIR* d = opendir("/tmp/qpext/cam");
-        if (!d) { sleep(1); continue; }
+        if (!d) { qpext_sleep_safe(1); continue; }
 
         // Find newest "<name>-NNN.jpg" per camera-name.
         std::map<std::string, std::pair<std::string, time_t>> latest;
@@ -921,7 +935,7 @@ static void* http_thread_fn(void*) {
     int sfd = -1;
     for (int attempt = 0; attempt < 30; ++attempt) {
         sfd = socket(AF_INET, SOCK_STREAM, 0);
-        if (sfd < 0) { sleep(1); continue; }
+        if (sfd < 0) { qpext_sleep_safe(1); continue; }
         int one = 1;
         setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
 #ifdef SO_REUSEPORT
@@ -935,7 +949,7 @@ static void* http_thread_fn(void*) {
         qplog_c("[qpext-http] bind attempt %d failed: %s",
                 attempt + 1, strerror(errno));
         close(sfd); sfd = -1;
-        sleep(2);
+        qpext_sleep_safe(2);
     }
     if (sfd < 0) { qplog_c("[qpext-http] gave up binding"); return nullptr; }
     listen(sfd, 8);
@@ -1006,7 +1020,7 @@ static void* events_config_thread_fn(void*) {
             pthread_mutex_unlock(&cam_mu);
             qplog_c("[qpext-evt] %zu triggers loaded", g_triggers.size());
         }
-        sleep(1);
+        qpext_sleep_safe(1);
     }
     return nullptr;
 }

@@ -38,6 +38,18 @@
 
 extern "C" void qplog_c(const char* fmt, ...);
 
+// EINTR-safe sleep. The host QingSnow2App process forks short-lived
+// children (wpa_cli, miio scripts, analyze_noise.sh, …) whose SIGCHLD
+// reaches our background threads and cuts plain sleep() short. Left
+// unchecked the retry loops spun at ~kHz on extended network outages,
+// starving the Qt main thread's watchdog feed and triggering the
+// script-level `reboot -f` after >4 self-exits in 60 s.
+static void qpext_sleep_safe(unsigned seconds) {
+    struct timespec req{(time_t)seconds, 0}, rem{};
+    while (nanosleep(&req, &rem) < 0 && errno == EINTR)
+        req = rem;
+}
+
 // Provided at compile time by build.sh; fall back to "dev" if the build
 // script didn't set it (e.g. someone invokes zig c++ directly).
 #ifndef QPEXT_VERSION
@@ -874,7 +886,7 @@ static void* mqtt_thread_fn(void*) {
     read_fw_version();
     qplog_c("[qpext-mqtt] fw=%s qpext=%s", g_fw_version.c_str(), QPEXT_VERSION);
     MqttCfg cfg;
-    while (!read_cfg(cfg)) sleep(2);
+    while (!read_cfg(cfg)) qpext_sleep_safe(2);
     qplog_c("[qpext-mqtt] cfg host=%s:%d user=%s mac=%s",
             cfg.host.c_str(), cfg.port, cfg.user.c_str(), cfg.mac.c_str());
 
@@ -883,10 +895,10 @@ static void* mqtt_thread_fn(void*) {
         int fd = tcp_open(cfg.host.c_str(), cfg.port);
         if (fd < 0) {
             qplog_c("[qpext-mqtt] tcp connect failed: %s", strerror(errno));
-            sleep(backoff); backoff = std::min(backoff * 2, 30); continue;
+            qpext_sleep_safe(backoff); backoff = std::min(backoff * 2, 30); continue;
         }
         if (!mqtt_connect(fd, cfg.client_id, cfg.user, cfg.pass)) {
-            close(fd); sleep(backoff); backoff = std::min(backoff * 2, 30); continue;
+            close(fd); qpext_sleep_safe(backoff); backoff = std::min(backoff * 2, 30); continue;
         }
         backoff = 1;
         qplog_c("[qpext-mqtt] connected, publishing discovery");
@@ -1002,7 +1014,7 @@ static void* mqtt_thread_fn(void*) {
 
         close(fd);
         qplog_c("[qpext-mqtt] disconnected, reconnect in %d s", backoff);
-        sleep(backoff); backoff = std::min(backoff * 2, 30);
+        qpext_sleep_safe(backoff); backoff = std::min(backoff * 2, 30);
     }
     return nullptr;
 }
