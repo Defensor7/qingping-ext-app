@@ -29,11 +29,19 @@ hot-reload'ит панель за ~1.5 с.
 
 2. Перезапустить Home Assistant.
 
-3. Settings → Devices & Services → **Add integration** → искать
-   *Qpext Airmonitor*. Ввести MAC устройства (12 hex-символов с
-   разделителями или без — например `58:2D:34:70:A8:73` или
-   `582D3470A873`). MAC берётся из `[device] wifi_mac` в
-   `/data/etc/setting.ini` на устройстве.
+3. Settings → Devices & Services.
+
+   - **Авто-дискавери** (предпочтительный путь). Если на устройстве уже
+     работает шим версии ≥ 0.2 и он подключён к тому же брокеру, что и
+     HA, устройство появится в разделе *Discovered* как
+     «Airmonitor &lt;MAC&gt;» — клик «Configure» → «Submit» добавляет его без
+     ввода MAC.
+
+   - **Ручной ввод** — fallback для случая «устройство ещё не публиковало
+     `qpext/<mac>/info`». **Add integration** → искать *Qpext Airmonitor*,
+     ввести MAC (12 hex-символов с разделителями или без — например
+     `58:2D:34:70:A8:73` или `582D3470A873`). MAC берётся из
+     `[device] wifi_mac` в `/data/etc/setting.ini` на устройстве.
 
 4. После добавления у девайса появится опция **Configure** — это и есть
    главный UI: меню с кнопками *Add widget* / *Edit widget* /

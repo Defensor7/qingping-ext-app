@@ -1,20 +1,27 @@
 {
   "title": "Qpext Airmonitor",
   "config": {
+    "flow_title": "{name}",
     "step": {
       "user": {
         "title": "Add a Qpext Airmonitor",
-        "description": "Enter the device's Wi-Fi MAC address. You can find it in /data/etc/setting.ini on the device. With or without separators — e.g. 58:2D:34:70:A8:73 or 582D3470A873.",
+        "description": "Enter the device's Wi-Fi MAC address. Auto-discovery via MQTT happens whenever the shim publishes a presence message to `qpext/<mac>/info`; this manual form is for cases when the device hasn't talked to the broker yet. With or without separators — e.g. 58:2D:34:70:A8:73 or 582D3470A873.",
         "data": {
           "mac": "MAC address"
         }
+      },
+      "discovery_confirm": {
+        "title": "Discovered Airmonitor",
+        "description": "An Airmonitor was discovered on MQTT.\n\n- MAC: {mac}\n- Model: {model}\n- Firmware: {sw}\n\nAdd it?"
       }
     },
     "error": {
       "invalid_mac": "MAC must be 12 hex digits."
     },
     "abort": {
-      "already_configured": "A device with this MAC is already configured."
+      "already_configured": "A device with this MAC is already configured.",
+      "invalid_discovery_topic": "The discovery topic is not in the expected qpext/<mac>/info form.",
+      "invalid_mac": "Auto-discovery received an invalid MAC."
     }
   },
   "options": {

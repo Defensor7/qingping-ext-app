@@ -1,18 +1,31 @@
 """Config + options flow for Qpext Airmonitor.
 
-The config flow only asks for the device MAC. All real configuration lives in
-the options flow, which is a small multi-step UI for picking widgets via HA's
-entity / icon selectors. Each change is persisted to `entry.options`, which
-triggers the update listener in __init__.py and re-publishes to MQTT.
+There are two ways into the integration:
+
+  1. **Auto-discovery via MQTT** (preferred). The shim publishes a retained
+     presence message to `qpext/<mac>/info`; HA routes that to
+     `async_step_mqtt` and the device shows up "to be added" in
+     Settings → Devices & Services without any manual input.
+
+  2. **Manual entry**. The user enters the device's Wi-Fi MAC themselves —
+     useful e.g. before the device has connected to the broker for the
+     first time, or after manually re-flashing.
+
+All real configuration lives in the options flow, which is a small
+multi-step UI for picking widgets via HA's entity / icon selectors. Each
+change is persisted to `entry.options`, which triggers the update listener
+in __init__.py and re-publishes to MQTT.
 """
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import voluptuous as vol
 
 from homeassistant import config_entries
+from homeassistant.components.mqtt import MqttServiceInfo
 from homeassistant.core import callback
 from homeassistant.helpers import selector
 
@@ -27,6 +40,8 @@ from .const import (
     TAB_NAMES,
     WIDGET_TYPES,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _normalize_mac(raw: str) -> str:
@@ -46,9 +61,16 @@ def _widget_label(idx: int, w: dict[str, Any]) -> str:
 
 
 class QpextConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Initial 'add integration' flow — just the device MAC."""
+    """Initial 'add integration' flow — manual entry OR MQTT auto-discovery."""
 
     VERSION = 1
+
+    def __init__(self) -> None:
+        # Populated by async_step_mqtt before async_step_discovery_confirm.
+        self._discovered_mac: str | None = None
+        self._discovered_info: dict[str, Any] = {}
+
+    # ----- manual entry --------------------------------------------------- #
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -70,6 +92,70 @@ class QpextConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=vol.Schema({vol.Required(CONF_MAC): str}),
             errors=errors,
+        )
+
+    # ----- MQTT auto-discovery ------------------------------------------- #
+
+    async def async_step_mqtt(
+        self, discovery_info: MqttServiceInfo
+    ) -> config_entries.ConfigFlowResult:
+        """Handle MQTT discovery via qpext/<mac>/info topic.
+
+        The shim publishes a retained payload to `qpext/<MAC_NORM>/info` on
+        every (re)connect. HA's MQTT integration routes that to this step
+        for any pattern declared in our manifest.json's `mqtt` field.
+        """
+        topic = discovery_info.topic
+        # Pull the MAC from the topic path — that's the most reliable source.
+        # Format: qpext/<MAC>/info
+        parts = topic.split("/")
+        if len(parts) != 3 or parts[0] != "qpext" or parts[2] != "info":
+            return self.async_abort(reason="invalid_discovery_topic")
+        mac = _normalize_mac(parts[1])
+        if len(mac) != 12 or any(c not in "0123456789ABCDEF" for c in mac):
+            return self.async_abort(reason="invalid_mac")
+
+        # Try to parse the payload for extra metadata (model, etc.). It's not
+        # required — discovery succeeds even with an empty payload.
+        info: dict[str, Any] = {}
+        if discovery_info.payload:
+            try:
+                info = json.loads(discovery_info.payload) or {}
+            except ValueError:
+                _LOGGER.debug("qpext_airmonitor: discovery payload not JSON: %r",
+                              discovery_info.payload[:80])
+
+        await self.async_set_unique_id(mac)
+        self._abort_if_unique_id_configured()
+
+        self._discovered_mac = mac
+        self._discovered_info = info
+        # Surface the device in the "Discovered" section with a friendly name.
+        self.context["title_placeholders"] = {
+            "name": f"Airmonitor {mac}",
+        }
+        return await self.async_step_discovery_confirm()
+
+    async def async_step_discovery_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Final 'do you want to add this discovered device?' step."""
+        assert self._discovered_mac is not None
+        mac = self._discovered_mac
+        if user_input is not None:
+            return self.async_create_entry(
+                title=f"Airmonitor {mac}",
+                data={CONF_MAC: mac},
+                options={CONF_WIDGETS: [], CONF_EVENTS: []},
+            )
+        info = self._discovered_info
+        return self.async_show_form(
+            step_id="discovery_confirm",
+            description_placeholders={
+                "mac": mac,
+                "model": info.get("model", "Air Monitor 2"),
+                "sw": info.get("sw", "qpext"),
+            },
         )
 
     @staticmethod

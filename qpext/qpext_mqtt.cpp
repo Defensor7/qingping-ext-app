@@ -370,6 +370,29 @@ static void publish_discovery(int fd, const MqttCfg& c) {
     qplog_c("[qpext-mqtt] discovery published for device id=%s", dev_id.c_str());
 }
 
+// Presence / auto-discovery payload for the HA custom_component
+// (qpext_airmonitor). Published retained on (re)connect — when the user
+// adds the integration, HA's MQTT discovery routes this message to the
+// integration's async_step_mqtt and the device shows up "to be added"
+// in Settings → Devices & Services without any MAC typing.
+//
+// We deliberately put this on a non-`homeassistant/...` topic so it doesn't
+// clash with the regular HA MQTT discovery routing.
+static void publish_presence(int fd, const MqttCfg& c) {
+    const std::string topic = "qpext/" + c.mac_norm + "/info";
+    std::string payload =
+        "{\"mac\":\""+c.mac+"\","
+         "\"mac_norm\":\""+c.mac_norm+"\","
+         "\"device_id\":\"qpext_"+c.mac_norm+"\","
+         "\"manufacturer\":\"Qingping\","
+         "\"model\":\"Air Monitor 2\","
+         "\"sw\":\"qpext\","
+         "\"dashboard_topic\":\"qpext/"+c.mac_norm+"/dashboard/set\","
+         "\"cmd_topic\":\"qpext/"+c.mac_norm+"/cmd\"}";
+    mqtt_publish(fd, topic, payload, /*retain=*/true);
+    qplog_c("[qpext-mqtt] presence published on %s", topic.c_str());
+}
+
 // Camera status from shim's internal state.
 extern "C" void qpext_get_cam_status_into(std::string* out);
 
@@ -533,6 +556,7 @@ static void* mqtt_thread_fn(void*) {
         backoff = 1;
         qplog_c("[qpext-mqtt] connected, publishing discovery");
         publish_discovery(fd, cfg);
+        publish_presence(fd, cfg);
         std::string cmd_topic = "qpext/" + cfg.mac_norm + "/cmd";
         std::string dashboard_topic = "qpext/" + cfg.mac_norm + "/dashboard/set";
         mqtt_subscribe(fd, cmd_topic, 1);
