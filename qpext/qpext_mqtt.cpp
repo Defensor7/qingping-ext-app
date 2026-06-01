@@ -12,6 +12,7 @@
 #include <sys/socket.h>
 #include <sys/sysinfo.h>
 #include <sys/un.h>
+#include <sys/stat.h>
 #include <net/if.h>
 #include <netinet/in.h>
 #include <netdb.h>
@@ -764,16 +765,17 @@ static void publish_discovery(int fd, const MqttCfg& c) {
         mqtt_publish(fd, cfg_topic, payload, true);
     }
 
-    // Three egress-filter switches that share the generic ToggleSpec
-    // machinery further down (see EXTRA_TOGGLES). Each blocks a specific
-    // class of outbound traffic from libQt5Network without touching the
-    // shim's own (qpext.so) connections.
+    // Egress-filter + content-substitute switches that share the generic
+    // ToggleSpec machinery further down (see EXTRA_TOGGLES). Each gates a
+    // specific class of stock-app traffic without touching the shim's
+    // own (qpext.so) connections.
     {
         struct E { const char* obj_id; const char* name; const char* icon; };
         static const E entries[] = {
-            {"block_cloud_https", "Block Qingping cloud HTTPS",     "mdi:cloud-off-outline"},
-            {"block_stock_mqtt",  "Block stock-app MQTT push",      "mdi:cloud-cancel"},
-            {"block_miio_ipc",    "Block Mi Home miio_client IPC",  "mdi:bridge"},
+            {"block_cloud_https",   "Block Qingping cloud HTTPS",    "mdi:cloud-off-outline"},
+            {"block_stock_mqtt",    "Block stock-app MQTT push",     "mdi:cloud-cancel"},
+            {"block_miio_ipc",      "Block Mi Home miio_client IPC", "mdi:bridge"},
+            {"substitute_weather",  "Substitute cloud weather data", "mdi:weather-partly-cloudy"},
         };
         for (const auto& e : entries) {
             std::string cfg_topic   = "homeassistant/switch/" + dev_id + "/" +
@@ -919,6 +921,34 @@ static void handle_set_payload(const std::string& payload, const char* path,
     }
 }
 
+// Five `qpext/<mac>/weather/<endpoint>/set` retained topics let HA stream
+// the per-endpoint payloads our SSL_write/SSL_read hooks will serve back
+// when the stock app polls Qingping's `/daily/*` API. Each `set` message
+// is written verbatim to `/data/qpext/weather/<endpoint>.json` (mkdir on
+// first call); the shim's response builder wraps it in `{"code":0,"data":…}`
+// and synthesises the HTTP envelope.
+static const char* WEATHER_ENDPOINTS[] = {
+    "now",              // /daily/now
+    "locate",           // /daily/locate
+    "weatherNow",       // /daily/weatherNow
+    "dailyForecasts",   // /daily/dailyForecasts?metric=weather
+    "hourlyForecasts",  // /daily/hourlyForecasts?metric=weather
+};
+static const int WEATHER_ENDPOINTS_N =
+    (int)(sizeof(WEATHER_ENDPOINTS) / sizeof(WEATHER_ENDPOINTS[0]));
+
+static void handle_weather_set(const std::string& endpoint,
+                               const std::string& payload) {
+    mkdir("/data/qpext/weather", 0755);   // idempotent; ignores EEXIST
+    std::string path = "/data/qpext/weather/" + endpoint + ".json";
+    if (write_file_atomic(path.c_str(), payload)) {
+        qplog_c("[qpext-mqtt] weather/%s applied: %zu bytes",
+                endpoint.c_str(), payload.size());
+    } else {
+        qplog_c("[qpext-mqtt] weather/%s: write failed", endpoint.c_str());
+    }
+}
+
 // Apply a `dashboard/set` MQTT message: validate it's a JSON object, then
 // write it verbatim to /data/qpext/widgets.json. After the ha-config split
 // (ha.* lives in /data/qpext/ha.json now) widgets.json is purely the
@@ -956,12 +986,15 @@ extern "C" void qpext_set_block_stock_mqtt(bool b);
 extern "C" bool qpext_get_block_stock_mqtt(void);
 extern "C" void qpext_set_block_miio_ipc(bool b);
 extern "C" bool qpext_get_block_miio_ipc(void);
+extern "C" void qpext_set_substitute_weather(bool b);
+extern "C" bool qpext_get_substitute_weather(void);
 
-static const char* UPDATE_CHECK_FILE      = "/data/qpext/update_check.txt";
-static const char* PING_STUB_FILE         = "/data/qpext/ping_stub.txt";
-static const char* BLOCK_CLOUD_HTTPS_FILE = "/data/qpext/block_cloud_https.txt";
-static const char* BLOCK_STOCK_MQTT_FILE  = "/data/qpext/block_stock_mqtt.txt";
-static const char* BLOCK_MIIO_IPC_FILE    = "/data/qpext/block_miio_ipc.txt";
+static const char* UPDATE_CHECK_FILE        = "/data/qpext/update_check.txt";
+static const char* PING_STUB_FILE           = "/data/qpext/ping_stub.txt";
+static const char* BLOCK_CLOUD_HTTPS_FILE   = "/data/qpext/block_cloud_https.txt";
+static const char* BLOCK_STOCK_MQTT_FILE    = "/data/qpext/block_stock_mqtt.txt";
+static const char* BLOCK_MIIO_IPC_FILE      = "/data/qpext/block_miio_ipc.txt";
+static const char* SUBSTITUTE_WEATHER_FILE  = "/data/qpext/substitute_weather.txt";
 
 
 // Parse a textual MQTT payload as a boolean. HA's switch discovery sends
@@ -1050,12 +1083,14 @@ struct ToggleSpec {
 };
 
 static const ToggleSpec EXTRA_TOGGLES[] = {
-    {"block_cloud_https", "block_cloud_https", BLOCK_CLOUD_HTTPS_FILE,
-        false, qpext_set_block_cloud_https, qpext_get_block_cloud_https},
-    {"block_stock_mqtt",  "block_stock_mqtt",  BLOCK_STOCK_MQTT_FILE,
-        false, qpext_set_block_stock_mqtt,  qpext_get_block_stock_mqtt},
-    {"block_miio_ipc",    "block_miio_ipc",    BLOCK_MIIO_IPC_FILE,
-        false, qpext_set_block_miio_ipc,    qpext_get_block_miio_ipc},
+    {"block_cloud_https",   "block_cloud_https",   BLOCK_CLOUD_HTTPS_FILE,
+        false, qpext_set_block_cloud_https,   qpext_get_block_cloud_https},
+    {"block_stock_mqtt",    "block_stock_mqtt",    BLOCK_STOCK_MQTT_FILE,
+        false, qpext_set_block_stock_mqtt,    qpext_get_block_stock_mqtt},
+    {"block_miio_ipc",      "block_miio_ipc",      BLOCK_MIIO_IPC_FILE,
+        false, qpext_set_block_miio_ipc,      qpext_get_block_miio_ipc},
+    {"substitute_weather",  "substitute_weather",  SUBSTITUTE_WEATHER_FILE,
+        false, qpext_set_substitute_weather,  qpext_get_substitute_weather},
 };
 static const int EXTRA_TOGGLES_N =
     (int)(sizeof(EXTRA_TOGGLES) / sizeof(EXTRA_TOGGLES[0]));
@@ -1147,6 +1182,12 @@ static void* mqtt_thread_fn(void*) {
                                   EXTRA_TOGGLES[i].obj_id + "/set";
             mqtt_subscribe(fd, extra_set_topics[i], (uint16_t)(10 + i));
         }
+        std::string weather_set_topics[WEATHER_ENDPOINTS_N];
+        for (int i = 0; i < WEATHER_ENDPOINTS_N; ++i) {
+            weather_set_topics[i] = "qpext/" + cfg.mac_norm + "/weather/" +
+                                    WEATHER_ENDPOINTS[i] + "/set";
+            mqtt_subscribe(fd, weather_set_topics[i], (uint16_t)(20 + i));
+        }
         publish_update_check_state(fd, cfg.mac_norm);
         publish_ping_stub_state(fd, cfg.mac_norm);
         for (int i = 0; i < EXTRA_TOGGLES_N; ++i)
@@ -1173,12 +1214,20 @@ static void* mqtt_thread_fn(void*) {
                     else if (pkt.topic == ping_set_topic)
                         handle_ping_stub_set(fd, cfg.mac_norm, pkt.payload);
                     else {
-                        for (int i = 0; i < EXTRA_TOGGLES_N; ++i) {
+                        bool matched = false;
+                        for (int i = 0; i < EXTRA_TOGGLES_N && !matched; ++i) {
                             if (pkt.topic == extra_set_topics[i]) {
                                 handle_extra_toggle_set(fd, cfg.mac_norm,
                                                         EXTRA_TOGGLES[i],
                                                         pkt.payload);
-                                break;
+                                matched = true;
+                            }
+                        }
+                        for (int i = 0; i < WEATHER_ENDPOINTS_N && !matched; ++i) {
+                            if (pkt.topic == weather_set_topics[i]) {
+                                handle_weather_set(WEATHER_ENDPOINTS[i],
+                                                   pkt.payload);
+                                matched = true;
                             }
                         }
                     }

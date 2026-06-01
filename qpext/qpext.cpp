@@ -30,6 +30,8 @@
 #include <fcntl.h>
 #include <string.h>
 #include <sys/time.h>
+#include <time.h>
+#include <string>
 
 // We log to /data/qpext/qpext.log because stderr -> /dev/console -> UART
 // and the device's UART is not hooked up to anything we can read.
@@ -331,6 +333,18 @@ extern "C" bool qpext_get_block_stock_mqtt(void)    { return g_block_stock_mqtt;
 extern "C" void qpext_set_block_miio_ipc(bool b)    { g_block_miio_ipc    = b; }
 extern "C" bool qpext_get_block_miio_ipc(void)      { return g_block_miio_ipc; }
 
+// When true, the SSL_write / SSL_read hook pair intercepts requests to
+// the Qingping cloud's `/daily/*` weather endpoints, drops the outbound
+// request, and synthesises a fake HTTP response from
+// `/data/qpext/weather/<endpoint>.json` so the stock UI shows the data
+// HA has fed us instead of whatever Qingping (or our local DNS hijack)
+// is returning. When ON but the matching file is missing the request
+// falls through to the real cloud — so a missing/incomplete HA push
+// never makes weather data disappear.
+static volatile bool g_substitute_weather = false;
+extern "C" void qpext_set_substitute_weather(bool b) { g_substitute_weather = b; }
+extern "C" bool qpext_get_substitute_weather(void)   { return g_substitute_weather; }
+
 // Cheap once-per-process check whether we're running inside the `/bin/ping`
 // subprocess that the stock app spawns to test internet connectivity. Our
 // LD_PRELOAD is inherited across fork/exec so the same qpext.so is loaded
@@ -413,6 +427,174 @@ static SslUrlTag* qpext_find_ssl_tag(void* ctx) {
     return nullptr;
 }
 
+// Per-SSL synthetic-response state. Set up in the SSL_write hook when we
+// recognise a `/daily/<endpoint>` request we have HA-supplied data for;
+// drained byte-by-byte in the SSL_read hook on the same `SSL*` ctx until
+// the buffer is exhausted, at which point we return 0 (EOF) to signal
+// end-of-response to Qt. Same lock-free ring as SslUrlTag; concurrent
+// writes are tolerated because the worst case is a dropped substitution,
+// not a crash.
+struct SslSynthState {
+    void* ctx;
+    char* buf;        // malloc'd HTTP response (headers + body), null when slot free
+    int   len;
+    int   pos;
+};
+#define QPEXT_SSL_SYNTH_SLOTS 8
+static SslSynthState g_ssl_synth[QPEXT_SSL_SYNTH_SLOTS] = {};
+
+static SslSynthState* qpext_find_ssl_synth(void* ctx) {
+    for (int i = 0; i < QPEXT_SSL_SYNTH_SLOTS; ++i) {
+        if (g_ssl_synth[i].ctx == ctx && g_ssl_synth[i].buf)
+            return &g_ssl_synth[i];
+    }
+    return nullptr;
+}
+
+// Free the slot and zero its bookkeeping. Called from SSL_read once the
+// entire synthesised response has been delivered to the app.
+static void qpext_free_ssl_synth(SslSynthState* s) {
+    if (s && s->buf) { free(s->buf); s->buf = nullptr; }
+    if (s) { s->ctx = nullptr; s->len = 0; s->pos = 0; }
+}
+
+// Take ownership of `resp` (a malloc'd buffer of `len` bytes) and arm
+// substitution for the next SSL_read calls on `ctx`. If `ctx` already
+// has a pending slot we replace it (extremely unlikely — would require
+// two requests in flight on the same SSL ctx).
+static void qpext_arm_ssl_synth(void* ctx, char* resp, int len) {
+    for (int i = 0; i < QPEXT_SSL_SYNTH_SLOTS; ++i) {
+        if (g_ssl_synth[i].ctx == ctx) {
+            qpext_free_ssl_synth(&g_ssl_synth[i]);
+            g_ssl_synth[i].ctx = ctx;
+            g_ssl_synth[i].buf = resp;
+            g_ssl_synth[i].len = len;
+            g_ssl_synth[i].pos = 0;
+            return;
+        }
+    }
+    // No matching slot — find a free one (or recycle the oldest).
+    for (int i = 0; i < QPEXT_SSL_SYNTH_SLOTS; ++i) {
+        if (!g_ssl_synth[i].buf) {
+            g_ssl_synth[i].ctx = ctx;
+            g_ssl_synth[i].buf = resp;
+            g_ssl_synth[i].len = len;
+            g_ssl_synth[i].pos = 0;
+            return;
+        }
+    }
+    // All slots occupied — pop slot 0 and reuse.
+    qpext_free_ssl_synth(&g_ssl_synth[0]);
+    g_ssl_synth[0].ctx = ctx;
+    g_ssl_synth[0].buf = resp;
+    g_ssl_synth[0].len = len;
+    g_ssl_synth[0].pos = 0;
+}
+
+// Map a captured request line (`GET <path> HTTP/1.1`) to one of the
+// known `/daily/*` endpoints we have HA data for. Returns the basename
+// of the per-endpoint JSON file, or nullptr when the URL doesn't match
+// anything we substitute.
+//
+//   /daily/now                            → "now"
+//   /daily/locate                         → "locate"
+//   /daily/weatherNow?…                   → "weatherNow"
+//   /daily/dailyForecasts?…&metric=weather→ "dailyForecasts"
+//   /daily/hourlyForecasts?…&metric=weather→ "hourlyForecasts"
+//   /daily/{daily,hourly}Forecasts?…&metric=aqi_us → "empty_array"
+//                                           (the cloud also returns []
+//                                            for these; we serve [] so
+//                                            the stock app doesn't show
+//                                            stale stock AQI forecasts)
+static const char* qpext_match_weather_endpoint(const char* request_line) {
+    if (!request_line) return nullptr;
+    // Cheap substring matches — request_line is short (under 256 chars).
+    if (strstr(request_line, " /daily/now ")) return "now";
+    if (strstr(request_line, " /daily/locate")) return "locate";
+    if (strstr(request_line, " /daily/weatherNow")) return "weatherNow";
+    bool daily   = strstr(request_line, " /daily/dailyForecasts")   != nullptr;
+    bool hourly  = strstr(request_line, " /daily/hourlyForecasts")  != nullptr;
+    bool aqi_us  = strstr(request_line, "metric=aqi_us")            != nullptr;
+    bool weather = strstr(request_line, "metric=weather")           != nullptr;
+    if (daily  && weather) return "dailyForecasts";
+    if (hourly && weather) return "hourlyForecasts";
+    if ((daily || hourly) && aqi_us) return "empty_array";
+    return nullptr;
+}
+
+// Read a small text file in full and return as std::string. Helper
+// duplicated from qpext_mqtt.cpp's `slurp` so qpext.cpp stays standalone.
+static std::string qpext_slurp(const char* path) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return {};
+    std::string out;
+    char buf[4096];
+    ssize_t n;
+    while ((n = read(fd, buf, sizeof(buf))) > 0)
+        out.append(buf, (size_t)n);
+    close(fd);
+    return out;
+}
+
+// Build the full HTTP/1.1 response we'll feed back through SSL_read for
+// the matched `endpoint`. Returns a malloc'd buffer (length in `*out_len`)
+// or nullptr if we don't have HA data for this endpoint and the request
+// should fall through to the real cloud.
+static char* qpext_build_weather_response(const char* endpoint, int* out_len) {
+    std::string body_data;
+    if (strcmp(endpoint, "empty_array") == 0) {
+        // The cloud responds `{"code":0,"data":[]}` for `metric=aqi_us`;
+        // synthesising the same is safe even without HA data.
+        body_data = "[]";
+    } else {
+        char path[160];
+        snprintf(path, sizeof(path), "/data/qpext/weather/%s.json", endpoint);
+        body_data = qpext_slurp(path);
+        if (body_data.empty()) return nullptr;
+        // Tolerate trailing whitespace/newline from a hand-edited file.
+        while (!body_data.empty() &&
+               (body_data.back() == '\n' || body_data.back() == '\r' ||
+                body_data.back() == ' '  || body_data.back() == '\t'))
+            body_data.pop_back();
+    }
+
+    // Wrap into `{"code":0,"data":<file>}` so the stock app's JSON parser
+    // finds the same envelope it expects from the cloud.
+    std::string body;
+    body.reserve(body_data.size() + 24);
+    body.append("{\"code\":0,\"data\":");
+    body.append(body_data);
+    body.append("}");
+
+    // RFC 7231 IMF-fixdate (e.g. "Mon, 01 Jun 2026 18:38:18 GMT") — same
+    // shape the cloud's nginx puts on the wire, so the captured-and-
+    // replayed responses look identical to the real ones.
+    char date[64];
+    time_t now = time(nullptr);
+    struct tm gm{};
+    gmtime_r(&now, &gm);
+    strftime(date, sizeof(date), "%a, %d %b %Y %H:%M:%S GMT", &gm);
+
+    std::string resp;
+    resp.reserve(body.size() + 256);
+    resp.append("HTTP/1.1 200 OK\r\n");
+    resp.append("Server: nginx\r\n");
+    resp.append("Date: "); resp.append(date); resp.append("\r\n");
+    resp.append("Content-Type: application/json; charset=utf-8\r\n");
+    char clbuf[32];
+    snprintf(clbuf, sizeof(clbuf), "%zu", body.size());
+    resp.append("Content-Length: "); resp.append(clbuf); resp.append("\r\n");
+    resp.append("Connection: close\r\n");
+    resp.append("\r\n");
+    resp.append(body);
+
+    char* out = (char*)malloc(resp.size());
+    if (!out) return nullptr;
+    memcpy(out, resp.data(), resp.size());
+    *out_len = (int)resp.size();
+    return out;
+}
+
 namespace { static void resolve_real_dlsym(void) {
     if (real_dlsym) return;
     // glibc on this device exports `dlsym` versioned as `GLIBC_2.17`
@@ -457,6 +639,27 @@ extern "C" int qpext_ssl_write_hook(void* ssl, const void* buf, int num) {
             // Remember which URL this SSL ctx is fetching, so the SSL_read
             // hook can tag the matching response body — see below.
             qpext_tag_ssl_url(ssl, line);
+
+            // Weather substitution. If the toggle is on and the URL is one
+            // of `/daily/*`, try to build a synthetic response from
+            // `/data/qpext/weather/<endpoint>.json`. If we have data, arm
+            // the SSL_read hook to deliver it AND drop this write so the
+            // server never sees the request — the cloud's real response is
+            // then irrelevant. If we have no data, fall through and let
+            // the cloud answer normally.
+            if (g_substitute_weather) {
+                const char* endpoint = qpext_match_weather_endpoint(line);
+                if (endpoint) {
+                    int synth_len = 0;
+                    char* synth = qpext_build_weather_response(endpoint, &synth_len);
+                    if (synth) {
+                        qpext_arm_ssl_synth(ssl, synth, synth_len);
+                        qplog("[qpext] weather substituted: %s (%d B synth)",
+                              endpoint, synth_len);
+                        return num;   // pretend the bytes went out
+                    }
+                }
+            }
         }
 
         if (!g_update_check_allowed) {
@@ -471,11 +674,33 @@ extern "C" int qpext_ssl_write_hook(void* ssl, const void* buf, int num) {
     return num;   // best-effort no-op rather than -1 (which would tear down the SSL session)
 }
 
-// Wrapper Qt calls when it thinks it's calling OpenSSL's SSL_read. Logs the
-// first couple of plaintext chunks of each HTTPS response so we can capture
-// the JSON schema the Qingping cloud returns — needed for the upcoming
-// "shim feeds cached weather from HA back into the stock app" project.
+// Wrapper Qt calls when it thinks it's calling OpenSSL's SSL_read. Two
+// jobs, in order:
+//
+//   1. If we armed a synthetic response for this `SSL*` in the SSL_write
+//      hook, drain bytes out of our pre-built HTTP response and return
+//      them. When the buffer is empty we return 0 (TLS "clean shutdown",
+//      no more data) so Qt's HTTP layer treats it as end-of-response;
+//      the real cloud connection (handshake-complete but never written
+//      to) is harmlessly torn down by Qt's own SSL_shutdown a moment
+//      later.
+//
+//   2. Otherwise call the real OpenSSL SSL_read and (best-effort) log
+//      the first couple of plaintext chunks of each response so we can
+//      keep reverse-engineering cloud schemas.
 extern "C" int qpext_ssl_read_hook(void* ssl, void* buf, int num) {
+    SslSynthState* synth = qpext_find_ssl_synth(ssl);
+    if (synth) {
+        if (synth->pos >= synth->len) {
+            qpext_free_ssl_synth(synth);
+            return 0;                      // clean EOF — Qt closes the conn
+        }
+        int remaining = synth->len - synth->pos;
+        int copy = remaining < num ? remaining : num;
+        if (buf && copy > 0) memcpy(buf, synth->buf + synth->pos, (size_t)copy);
+        synth->pos += copy;
+        return copy;
+    }
     if (!real_ssl_read) return -1;
     int n = real_ssl_read(ssl, buf, num);
     if (n > 0 && buf) {
