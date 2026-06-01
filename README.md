@@ -39,26 +39,41 @@ NOTES.md                     полные технические заметки 
    После этого `adb shell` доступен, MQTT-credentials лежат в
    `/data/etc/setting.ini`.
 
-2. Скопировать примеры и заполнить:
+2. Запустить инсталлятор. Либо в один клик прямо из сети:
    ```sh
-   cp qpext/qml/cameras.json.example qpext/qml/cameras.json
-   cp qpext/qml/widgets.json.example qpext/qml/widgets.json
-   # отредактировать оба: вставить RTSP-URL с логином/паролем,
-   # base_url HA и long-lived access token
+   curl -fsSL https://raw.githubusercontent.com/Defensor7/qingping-ext-app/main/install.sh | sh
+   ```
+   либо из клона:
+   ```sh
+   git clone https://github.com/Defensor7/qingping-ext-app.git
+   cd qingping-ext-app
+   ./install.sh
    ```
 
-3. Собрать и задеплоить шим + QML:
-   ```sh
-   qpext/build.sh deploy        # сборка qpext.so + push + pkill
-   qpext/deploy.sh install      # вешает sh-обёртку с LD_PRELOAD
-   qpext/deploy.sh logs         # тейл /data/qpext/qpext.log
-   ```
+   Инсталлятор сам:
+   - проверит зависимости (`adb`, `zig`), подскажет как ставить
+   - найдёт устройство через `adb devices` (или возьмёт `ANDROID_SERIAL`)
+   - убедится, что это действительно Snow2 (есть `/qingping/bin/QingSnow2App`)
+   - соберёт `qpext.so` через zig
+   - заполнит `/data/qpext/cameras.json` и `widgets.json` из
+     `.example`-шаблонов, если их там ещё нет (с placeholder'ами для credentials)
+   - пушит QML + шим + sh-обёртку, перезапускает приложение
+
+   Полезные опции: `--update` (git pull + rebuild + redeploy),
+   `--uninstall` (восстановить оригинальный `QingSnow2App`),
+   `--device <serial>`, `--no-build`, `--no-seed-config`.
+
+3. Заполнить реальные креды в `/data/qpext/cameras.json` (RTSP-URL с
+   логином/паролем камеры) и `/data/qpext/widgets.json`
+   (`ha.base_url` + long-lived access token). Изменения подхватываются
+   QML hot-reload'ом через ~1.5 с, перезапуск приложения не нужен.
 
 4. (Опционально) поставить HA-интеграцию:
    ```sh
    cp -r ha_integration/qpext_airmonitor \
          /<ha-config-dir>/custom_components/
-   # перезапустить HA, добавить интеграцию в Settings -> Devices & Services
+   # перезапустить HA — устройство появится в Discovered автоматически
+   # (см. ha_integration/README.md)
    ```
 
 ## Что устройство получает в HA после установки
