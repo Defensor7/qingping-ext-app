@@ -7,7 +7,7 @@ import ".."
 Frame {
     id: w
     available: true
-    color: tapArea.pressed ? "#1a3a55" : "#142b45"
+    color: w.bgColor || (tapArea.pressed ? "#1a3a55" : "#142b45")
     border.color: "#1f4870"
 
     onTapped: {
@@ -21,18 +21,19 @@ Frame {
         anchors.margins: 14
         spacing: 14
         MdiIcon {
-            Layout.preferredWidth: 56; Layout.preferredHeight: 56
+            Layout.preferredWidth: w.iconSize || 56
+            Layout.preferredHeight: w.iconSize || 56
             name: (widget && widget.icon) ||
                   (widget && widget.entity && widget.entity.indexOf("scene.") === 0
                        ? "play-circle" : "script-text")
-            size: 52
-            color: "#5ab8ff"
+            size: w.iconSize || 52
+            color: w.iconColor || "#5ab8ff"
         }
         QText {
             Layout.fillWidth: true
             text: w.displayName
-            color: "white"
-            font.pixelSize: 24
+            color: w.titleColor || "white"
+            font.pixelSize: w.titleSize || 24
             font.bold: true
             elide: Text.ElideRight
             wrapMode: Text.WordWrap

@@ -47,7 +47,14 @@
         "data": {
           "entity": "HA entity",
           "label": "Label (optional)",
-          "icon": "Icon (mdi:…)"
+          "icon": "Icon (mdi:…)",
+          "title_size": "Title font size",
+          "title_color": "Title color",
+          "value_size": "Value font size",
+          "value_color": "Value color",
+          "icon_size": "Icon size",
+          "icon_color": "Icon color",
+          "bg_color": "Card background"
         }
       },
       "add_button": {
@@ -56,17 +63,36 @@
           "label": "Label",
           "service": "Service (e.g. switch.turn_on)",
           "data": "Service data (JSON, optional)",
-          "icon": "Icon (mdi:…)"
+          "icon": "Icon (mdi:…)",
+          "title_size": "Title font size",
+          "title_color": "Title color",
+          "value_size": "Value font size",
+          "value_color": "Value color",
+          "icon_size": "Icon size",
+          "icon_color": "Icon color",
+          "bg_color": "Card background"
         }
       },
       "edit_widget": {"title": "Pick the widget to edit", "data": {"index": "Widget"}},
       "edit_entity_widget": {
         "title": "Edit {widget_type} widget",
-        "data": {"entity": "HA entity", "label": "Label", "icon": "Icon"}
+        "data": {
+          "entity": "HA entity", "label": "Label", "icon": "Icon",
+          "title_size": "Title font size", "title_color": "Title color",
+          "value_size": "Value font size", "value_color": "Value color",
+          "icon_size": "Icon size", "icon_color": "Icon color",
+          "bg_color": "Card background"
+        }
       },
       "edit_button": {
         "title": "Edit button widget",
-        "data": {"label": "Label", "service": "Service", "data": "Service data (JSON)", "icon": "Icon"}
+        "data": {
+          "label": "Label", "service": "Service", "data": "Service data (JSON)", "icon": "Icon",
+          "title_size": "Title font size", "title_color": "Title color",
+          "value_size": "Value font size", "value_color": "Value color",
+          "icon_size": "Icon size", "icon_color": "Icon color",
+          "bg_color": "Card background"
+        }
       },
       "remove_widget": {"title": "Pick the widget to remove", "data": {"index": "Widget"}},
       "cameras_menu": {

@@ -17,16 +17,17 @@ Frame {
             spacing: 10
 
             MdiIcon {
-                Layout.preferredWidth: 36; Layout.preferredHeight: 36
+                Layout.preferredWidth: w.iconSize || 36
+                Layout.preferredHeight: w.iconSize || 36
                 name: widget && widget.icon ? widget.icon : "thermometer"
-                size: 36
-                color: "#88aacc"
+                size: w.iconSize || 36
+                color: w.iconColor || w.titleColor || "#88aacc"
             }
             QText {
                 Layout.fillWidth: true
                 text: w.displayName
-                color: "#88aacc"
-                font.pixelSize: 18
+                color: w.titleColor || "#88aacc"
+                font.pixelSize: w.titleSize || 18
                 elide: Text.ElideRight
             }
         }
@@ -42,8 +43,8 @@ Frame {
                          (hass.attributes ? hass.attributes.unit_of_measurement || "" : "")
                 return v + (u ? " " + u : "")
             }
-            color: "white"
-            font.pixelSize: 36
+            color: w.valueColor || "white"
+            font.pixelSize: w.valueSize || 36
             font.bold: true
             horizontalAlignment: Text.AlignRight
             elide: Text.ElideRight

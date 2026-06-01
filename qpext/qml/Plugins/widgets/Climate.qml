@@ -27,16 +27,17 @@ Frame {
             Layout.fillWidth: true
             spacing: 10
             MdiIcon {
-                Layout.preferredWidth: 36; Layout.preferredHeight: 36
+                Layout.preferredWidth: w.iconSize || 36
+                Layout.preferredHeight: w.iconSize || 36
                 name: (widget && widget.icon) || "thermostat"
-                size: 34
-                color: w.on ? "#5ab8ff" : "#88aacc"
+                size: w.iconSize || 34
+                color: w.iconColor || (w.on ? "#5ab8ff" : "#88aacc")
             }
             QText {
                 Layout.fillWidth: true
                 text: w.displayName
-                color: "#88aacc"
-                font.pixelSize: 18
+                color: w.titleColor || "#88aacc"
+                font.pixelSize: w.titleSize || 18
                 elide: Text.ElideRight
             }
         }
@@ -46,8 +47,8 @@ Frame {
         QText {
             Layout.fillWidth: true
             text: w.currentTemp.toFixed(1) + "°"
-            color: "white"
-            font.pixelSize: 34
+            color: w.valueColor || "white"
+            font.pixelSize: w.valueSize || 34
             font.bold: true
             horizontalAlignment: Text.AlignRight
         }

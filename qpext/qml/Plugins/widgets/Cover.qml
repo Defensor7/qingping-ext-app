@@ -27,21 +27,22 @@ Frame {
             Layout.fillWidth: true
             spacing: 10
             MdiIcon {
-                Layout.preferredWidth: 44; Layout.preferredHeight: 44
+                Layout.preferredWidth: w.iconSize || 44
+                Layout.preferredHeight: w.iconSize || 44
                 name: {
                     if (widget && widget.icon) return widget.icon
                     var s = hass ? hass.state : "closed"
                     if (s === "open" || s === "opening") return "window-open"
                     return "window-closed"
                 }
-                size: 42
-                color: w.on ? "#5ab8ff" : "#88aacc"
+                size: w.iconSize || 42
+                color: w.iconColor || (w.on ? "#5ab8ff" : "#88aacc")
             }
             QText {
                 Layout.fillWidth: true
                 text: w.displayName
-                color: "#88aacc"
-                font.pixelSize: 20
+                color: w.titleColor || "#88aacc"
+                font.pixelSize: w.titleSize || 20
                 elide: Text.ElideRight
             }
         }
@@ -56,8 +57,8 @@ Frame {
                 if (pos !== undefined && pos !== null) return pos + "%"
                 return hass.state
             }
-            color: "white"
-            font.pixelSize: 30
+            color: w.valueColor || "white"
+            font.pixelSize: w.valueSize || 30
             font.bold: true
             horizontalAlignment: Text.AlignRight
             elide: Text.ElideRight

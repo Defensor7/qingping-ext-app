@@ -22,16 +22,17 @@ Frame {
             Layout.fillWidth: true
             spacing: 10
             MdiIcon {
-                Layout.preferredWidth: 36; Layout.preferredHeight: 36
+                Layout.preferredWidth: w.iconSize || 36
+                Layout.preferredHeight: w.iconSize || 36
                 name: (widget && widget.icon) || "television"
-                size: 34
-                color: w.on ? "#5ab8ff" : "#88aacc"
+                size: w.iconSize || 34
+                color: w.iconColor || (w.on ? "#5ab8ff" : "#88aacc")
             }
             QText {
                 Layout.fillWidth: true
                 text: w.displayName
-                color: "#88aacc"
-                font.pixelSize: 18
+                color: w.titleColor || "#88aacc"
+                font.pixelSize: w.titleSize || 18
                 elide: Text.ElideRight
             }
         }
@@ -45,8 +46,8 @@ Frame {
                 if (title) return title
                 return hass.state
             }
-            color: "white"
-            font.pixelSize: 18
+            color: w.valueColor || "white"
+            font.pixelSize: w.valueSize || 18
             elide: Text.ElideRight
             maximumLineCount: 2
             wrapMode: Text.WrapAtWordBoundaryOrAnywhere

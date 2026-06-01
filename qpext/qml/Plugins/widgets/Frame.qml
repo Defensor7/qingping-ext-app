@@ -23,13 +23,27 @@ Rectangle {
             return hass.attributes.friendly_name
         return (widget && widget.entity) || ""
     }
+
+    // Per-card appearance overrides, configurable in the HA options flow
+    // (config_flow.py — `_appearance_extras`). Each widget binds to these
+    // via `w.titleColor || <default>` / `w.titleSize || <default>` etc.,
+    // so unset values fall back to the widget's own hardcoded defaults.
+    readonly property string titleColor: (widget && widget.title_color) || ""
+    readonly property int    titleSize:  (widget && widget.title_size)  || 0
+    readonly property string valueColor: (widget && widget.value_color) || ""
+    readonly property int    valueSize:  (widget && widget.value_size)  || 0
+    readonly property string iconColor:  (widget && widget.icon_color)  || ""
+    readonly property int    iconSize:   (widget && widget.icon_size)   || 0
+    readonly property string bgColor:    (widget && widget.bg_color)    || ""
     signal call(string domain, string service, var data)
     signal tapped()
 
     default property alias bodyChildren: body.children
 
     radius: 8
-    color: !available ? "#1a1a1a" : (on ? "#1f5588" : "#181818")
+    // bgColor (from widget.bg_color) is a full override — it wins over the
+    // available / on-state coloring. Leave empty to keep the default logic.
+    color: bgColor || (!available ? "#1a1a1a" : (on ? "#1f5588" : "#181818"))
     border.width: 1
     border.color: !available ? "#2a2a2a" : (on ? "#3388cc" : "#2a2a2a")
 

@@ -61,6 +61,60 @@ def _camera_label(idx: int, c: dict[str, Any]) -> str:
     return f"#{idx + 1} · {body}"
 
 
+# Per-widget appearance overrides. The QML side (`widgets/Frame.qml`) reads
+# these via readonly properties `titleColor` / `titleSize` / `valueColor` /
+# `valueSize` / `iconColor` / `iconSize` / `bgColor`; each widget falls back
+# to its hardcoded default when the override is empty / zero.
+APPEARANCE_FIELDS = ("title_size", "title_color", "value_size", "value_color",
+                     "icon_size", "icon_color", "bg_color")
+
+
+def _appearance_extras(defaults: dict[str, Any] | None = None) -> dict:
+    """Schema fragment (mergeable into a vol.Schema dict) for the appearance
+    overrides. Sizes are integers (0 = "default"), colors are free-form
+    strings — QML's `color` type tolerates "#rgb", "#rrggbb", and named
+    CSS colors so we don't validate beyond non-empty."""
+    d = defaults or {}
+    return {
+        vol.Optional("title_size", default=int(d.get("title_size", 0) or 0)):
+            selector.NumberSelector(selector.NumberSelectorConfig(
+                min=0, max=200, step=1, mode=selector.NumberSelectorMode.BOX)),
+        vol.Optional("title_color", default=str(d.get("title_color", "") or "")):
+            selector.TextSelector(),
+        vol.Optional("value_size", default=int(d.get("value_size", 0) or 0)):
+            selector.NumberSelector(selector.NumberSelectorConfig(
+                min=0, max=200, step=1, mode=selector.NumberSelectorMode.BOX)),
+        vol.Optional("value_color", default=str(d.get("value_color", "") or "")):
+            selector.TextSelector(),
+        vol.Optional("icon_size", default=int(d.get("icon_size", 0) or 0)):
+            selector.NumberSelector(selector.NumberSelectorConfig(
+                min=0, max=200, step=1, mode=selector.NumberSelectorMode.BOX)),
+        vol.Optional("icon_color", default=str(d.get("icon_color", "") or "")):
+            selector.TextSelector(),
+        vol.Optional("bg_color", default=str(d.get("bg_color", "") or "")):
+            selector.TextSelector(),
+    }
+
+
+def _extract_appearance(user_input: dict[str, Any]) -> dict[str, Any]:
+    """Return only the appearance fields that were actually set
+    (non-empty string for colors, non-zero int for sizes)."""
+    out: dict[str, Any] = {}
+    for key in APPEARANCE_FIELDS:
+        v = user_input.get(key)
+        if v in (None, "", 0):
+            continue
+        # NumberSelector hands back floats; widget JSON wants ints for sizes.
+        if key.endswith("_size"):
+            try:
+                out[key] = int(v)
+            except (TypeError, ValueError):
+                continue
+        else:
+            out[key] = str(v).strip()
+    return out
+
+
 def _camera_url_redacted(url: str) -> str:
     """Hide password in the rtsp://user:pass@host URL for display purposes."""
     if "@" not in url:
@@ -264,14 +318,14 @@ class QpextOptionsFlow(config_entries.OptionsFlow):
         """Add a widget for an HA entity (sensor / switch / light / etc.)."""
         wtype = self._add_type or "sensor"
         if user_input is not None:
-            self._widgets.append(
-                {
-                    "type": wtype,
-                    "entity": user_input["entity"],
-                    "label": user_input.get("label") or "",
-                    "icon": user_input.get("icon") or DEFAULT_ICONS.get(wtype, ""),
-                }
-            )
+            widget = {
+                "type": wtype,
+                "entity": user_input["entity"],
+                "label": user_input.get("label") or "",
+                "icon": user_input.get("icon") or DEFAULT_ICONS.get(wtype, ""),
+            }
+            widget.update(_extract_appearance(user_input))
+            self._widgets.append(widget)
             self._add_type = None
             await self._persist()
             return await self.async_step_init()
@@ -282,15 +336,14 @@ class QpextOptionsFlow(config_entries.OptionsFlow):
             if domain_filter
             else selector.EntitySelectorConfig()
         )
-        schema = vol.Schema(
-            {
-                vol.Required("entity"): selector.EntitySelector(ent_cfg),
-                vol.Optional("label", default=""): selector.TextSelector(),
-                vol.Optional(
-                    "icon", default=DEFAULT_ICONS.get(wtype, "")
-                ): selector.IconSelector(),
-            }
-        )
+        schema = vol.Schema({
+            vol.Required("entity"): selector.EntitySelector(ent_cfg),
+            vol.Optional("label", default=""): selector.TextSelector(),
+            vol.Optional(
+                "icon", default=DEFAULT_ICONS.get(wtype, "")
+            ): selector.IconSelector(),
+            **_appearance_extras(),
+        })
         return self.async_show_form(
             step_id="add_entity_widget",
             data_schema=schema,
@@ -313,23 +366,23 @@ class QpextOptionsFlow(config_entries.OptionsFlow):
                 }
                 if data_obj:
                     widget["data"] = data_obj
+                widget.update(_extract_appearance(user_input))
                 self._widgets.append(widget)
                 self._add_type = None
                 await self._persist()
                 return await self.async_step_init()
 
-        schema = vol.Schema(
-            {
-                vol.Optional("label", default=""): selector.TextSelector(),
-                vol.Required("service"): selector.TextSelector(),
-                vol.Optional("data", default=""): selector.TextSelector(
-                    selector.TextSelectorConfig(multiline=True)
-                ),
-                vol.Optional(
-                    "icon", default=DEFAULT_ICONS["button"]
-                ): selector.IconSelector(),
-            }
-        )
+        schema = vol.Schema({
+            vol.Optional("label", default=""): selector.TextSelector(),
+            vol.Required("service"): selector.TextSelector(),
+            vol.Optional("data", default=""): selector.TextSelector(
+                selector.TextSelectorConfig(multiline=True)
+            ),
+            vol.Optional(
+                "icon", default=DEFAULT_ICONS["button"]
+            ): selector.IconSelector(),
+            **_appearance_extras(),
+        })
         return self.async_show_form(
             step_id="add_button", data_schema=schema, errors=errors
         )
@@ -366,6 +419,10 @@ class QpextOptionsFlow(config_entries.OptionsFlow):
             w["entity"] = user_input["entity"]
             w["label"] = user_input.get("label") or ""
             w["icon"] = user_input.get("icon") or DEFAULT_ICONS.get(wtype, "")
+            # Strip any old appearance fields then re-apply from user input.
+            for k in APPEARANCE_FIELDS:
+                w.pop(k, None)
+            w.update(_extract_appearance(user_input))
             self._widgets[idx] = w
             self._edit_idx = None
             await self._persist()
@@ -377,17 +434,16 @@ class QpextOptionsFlow(config_entries.OptionsFlow):
             if domain_filter
             else selector.EntitySelectorConfig()
         )
-        schema = vol.Schema(
-            {
-                vol.Required("entity", default=w.get("entity", "")): selector.EntitySelector(
-                    ent_cfg
-                ),
-                vol.Optional("label", default=w.get("label", "")): selector.TextSelector(),
-                vol.Optional(
-                    "icon", default=w.get("icon") or DEFAULT_ICONS.get(wtype, "")
-                ): selector.IconSelector(),
-            }
-        )
+        schema = vol.Schema({
+            vol.Required("entity", default=w.get("entity", "")): selector.EntitySelector(
+                ent_cfg
+            ),
+            vol.Optional("label", default=w.get("label", "")): selector.TextSelector(),
+            vol.Optional(
+                "icon", default=w.get("icon") or DEFAULT_ICONS.get(wtype, "")
+            ): selector.IconSelector(),
+            **_appearance_extras(w),
+        })
         return self.async_show_form(
             step_id="edit_entity_widget",
             data_schema=schema,
@@ -413,6 +469,9 @@ class QpextOptionsFlow(config_entries.OptionsFlow):
                     w["data"] = data_obj
                 elif "data" in w:
                     del w["data"]
+                for k in APPEARANCE_FIELDS:
+                    w.pop(k, None)
+                w.update(_extract_appearance(user_input))
                 self._widgets[idx] = w
                 self._edit_idx = None
                 await self._persist()
@@ -421,18 +480,17 @@ class QpextOptionsFlow(config_entries.OptionsFlow):
         existing_data = (
             json.dumps(w["data"], ensure_ascii=False) if w.get("data") else ""
         )
-        schema = vol.Schema(
-            {
-                vol.Optional("label", default=w.get("label", "")): selector.TextSelector(),
-                vol.Required("service", default=w.get("service", "")): selector.TextSelector(),
-                vol.Optional("data", default=existing_data): selector.TextSelector(
-                    selector.TextSelectorConfig(multiline=True)
-                ),
-                vol.Optional(
-                    "icon", default=w.get("icon") or DEFAULT_ICONS["button"]
-                ): selector.IconSelector(),
-            }
-        )
+        schema = vol.Schema({
+            vol.Optional("label", default=w.get("label", "")): selector.TextSelector(),
+            vol.Required("service", default=w.get("service", "")): selector.TextSelector(),
+            vol.Optional("data", default=existing_data): selector.TextSelector(
+                selector.TextSelectorConfig(multiline=True)
+            ),
+            vol.Optional(
+                "icon", default=w.get("icon") or DEFAULT_ICONS["button"]
+            ): selector.IconSelector(),
+            **_appearance_extras(w),
+        })
         return self.async_show_form(
             step_id="edit_button", data_schema=schema, errors=errors
         )

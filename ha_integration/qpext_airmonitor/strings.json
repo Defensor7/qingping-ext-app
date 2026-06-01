@@ -46,21 +46,35 @@
       },
       "add_entity_widget": {
         "title": "New {widget_type} widget",
-        "description": "Pick an HA entity, optionally label and icon. The label and icon both fall back to sensible defaults if left empty.",
+        "description": "Pick an HA entity, optionally label and icon. Appearance fields (sizes / colors) are optional — leave at 0 / blank to keep the widget's defaults. Colors accept `#rgb`, `#rrggbb`, or CSS names.",
         "data": {
           "entity": "HA entity",
           "label": "Label (optional)",
-          "icon": "Icon (mdi:…)"
+          "icon": "Icon (mdi:…)",
+          "title_size": "Title font size (0 = default)",
+          "title_color": "Title color (e.g. #88aacc)",
+          "value_size": "Value font size (0 = default)",
+          "value_color": "Value color",
+          "icon_size": "Icon size (0 = default)",
+          "icon_color": "Icon color",
+          "bg_color": "Card background (overrides default)"
         }
       },
       "add_button": {
         "title": "New button widget",
-        "description": "A button widget calls a HA service when tapped. Data is an optional JSON object passed as service data (e.g. {\"entity_id\": \"switch.foo\"}).",
+        "description": "A button widget calls a HA service when tapped. Data is an optional JSON object passed as service data (e.g. {\"entity_id\": \"switch.foo\"}). Appearance fields are optional.",
         "data": {
           "label": "Label",
           "service": "Service (e.g. switch.turn_on)",
           "data": "Service data (JSON, optional)",
-          "icon": "Icon (mdi:…)"
+          "icon": "Icon (mdi:…)",
+          "title_size": "Title font size",
+          "title_color": "Title color",
+          "value_size": "Value font size",
+          "value_color": "Value color",
+          "icon_size": "Icon size",
+          "icon_color": "Icon color",
+          "bg_color": "Card background"
         }
       },
       "edit_widget": {
@@ -74,7 +88,14 @@
         "data": {
           "entity": "HA entity",
           "label": "Label",
-          "icon": "Icon"
+          "icon": "Icon",
+          "title_size": "Title font size",
+          "title_color": "Title color",
+          "value_size": "Value font size",
+          "value_color": "Value color",
+          "icon_size": "Icon size",
+          "icon_color": "Icon color",
+          "bg_color": "Card background"
         }
       },
       "edit_button": {
@@ -83,7 +104,14 @@
           "label": "Label",
           "service": "Service",
           "data": "Service data (JSON)",
-          "icon": "Icon"
+          "icon": "Icon",
+          "title_size": "Title font size",
+          "title_color": "Title color",
+          "value_size": "Value font size",
+          "value_color": "Value color",
+          "icon_size": "Icon size",
+          "icon_color": "Icon color",
+          "bg_color": "Card background"
         }
       },
       "remove_widget": {
