@@ -170,7 +170,41 @@ static const QString* build_entry(void) {
 
 }  // namespace
 
+// --------------------------------------------------------------------------
+// Hook QQmlContext::setContextProperty(const QString&, QObject*)
+//
+// The original QingSnow2App registers ~20 controllers on the root context —
+// `airdataController` (sensor model), `screenManager`, `wifiManager`, etc.
+// We want a live, programmatic handle to `airdataController` for telemetry,
+// so we override the C++ overload, save the QObject* when name matches, and
+// forward to the real implementation. Everything else goes through unchanged.
+// --------------------------------------------------------------------------
+using set_ctx_prop_fn = void (*)(void* self, const QString* name, void* obj);
+static set_ctx_prop_fn original_set_ctx_prop = nullptr;
+extern "C" void qpext_set_airdata_controller(void* obj);  // in qpext_mqtt.cpp
+
+namespace { static void resolve_set_ctx_prop() {
+    if (original_set_ctx_prop) return;
+    original_set_ctx_prop = (set_ctx_prop_fn)dlsym(RTLD_NEXT,
+        "_ZN11QQmlContext18setContextPropertyERK7QStringP7QObject");
+    if (!original_set_ctx_prop)
+        qplog("[qpext] FATAL: dlsym QQmlContext::setContextProperty failed");
+}}
+
 extern "C" {
+
+__attribute__((visibility("default")))
+void _ZN11QQmlContext18setContextPropertyERK7QStringP7QObject(
+    void* self, const QString* name, void* obj)
+{
+    resolve_set_ctx_prop();
+    if (original_set_ctx_prop) original_set_ctx_prop(self, name, obj);
+    char buf[64];
+    qstring_to_utf8(name, buf, sizeof(buf));
+    if (strcmp(buf, "airdataController") == 0) {
+        qpext_set_airdata_controller(obj);
+    }
+}
 
 // Quick check: are we actually inside QingSnow2App? LD_PRELOAD is inherited
 // by every child process the app spawns (wpa_cli, ping, mosquitto_sub, ...).

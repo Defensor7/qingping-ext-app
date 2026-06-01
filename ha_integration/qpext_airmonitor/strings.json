@@ -1,18 +1,18 @@
 {
-  "title": "Qpext Airmonitor",
+  "title": "Airmonitor App Extension",
   "config": {
     "flow_title": "{name}",
     "step": {
       "user": {
-        "title": "Add a Qpext Airmonitor",
+        "title": "Add an Airmonitor App Extension",
         "description": "Enter the device's Wi-Fi MAC address. Auto-discovery via MQTT happens whenever the shim publishes a presence message to `qpext/<mac>/info`; this manual form is for cases when the device hasn't talked to the broker yet. With or without separators — e.g. 58:2D:34:70:A8:73 or 582D3470A873.",
         "data": {
           "mac": "MAC address"
         }
       },
       "discovery_confirm": {
-        "title": "Discovered Airmonitor",
-        "description": "An Airmonitor was discovered on MQTT.\n\n- MAC: {mac}\n- Model: {model}\n- Firmware: {sw}\n\nAdd it?"
+        "title": "Discovered Airmonitor App Extension",
+        "description": "An Airmonitor App Extension was discovered on MQTT.\n\n- MAC: {mac}\n- Model: {model}\n- Firmware: {sw}\n\nAdd it?"
       }
     },
     "error": {
@@ -27,7 +27,7 @@
   "options": {
     "step": {
       "init": {
-        "title": "Airmonitor dashboard",
+        "title": "Airmonitor App Extension dashboard",
         "description": "Add, edit or remove widgets shown on the device's HA tab. Triggers map HA events to a tab switch on the device.",
         "menu_options": {
           "add_widget": "Add a widget",

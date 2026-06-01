@@ -23,6 +23,7 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <ctype.h>
+#include <dlfcn.h>
 
 #include <string>
 #include <map>
@@ -211,6 +212,174 @@ static bool mqtt_read_pkt(int fd, InPkt& out) {
 }
 
 // ---------------------------------------------------------------------------
+// Firmware / air-data introspection
+// ---------------------------------------------------------------------------
+
+// Read the Qingping firmware version once at startup. It lives in
+// /qingping/etc/os-release as `CLEARGRASS_VERSION=4.5.6_0167`. Used in
+// MQTT discovery's `sw_version` so HA shows both the device's stock
+// firmware and our shim version side by side.
+static std::string g_fw_version;
+
+static void read_fw_version() {
+    std::string raw = slurp("/qingping/etc/os-release");
+    if (raw.empty()) { g_fw_version = "unknown"; return; }
+    static const char* KEY = "CLEARGRASS_VERSION=";
+    auto pos = raw.find(KEY);
+    if (pos == std::string::npos) { g_fw_version = "unknown"; return; }
+    pos += strlen(KEY);
+    auto end = raw.find_first_of("\r\n", pos);
+    g_fw_version = raw.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+}
+
+// Live air-data pulled straight from QML's `airdataController` QObject —
+// the same one bound into AirDatasView.qml etc. Populated by poll_airdata()
+// each telemetry cycle via direct Qt introspection (QObject::property
+// chains; see qpext.cpp's setContextProperty hook for how we get the
+// controller pointer). No log parsing, no DB scrape.
+static pthread_mutex_t g_air_mu = PTHREAD_MUTEX_INITIALIZER;
+static std::map<std::string, double> g_air;
+static void* g_airdata_controller = nullptr;
+static pthread_mutex_t g_ctrl_mu = PTHREAD_MUTEX_INITIALIZER;
+
+// Layout-compatible stand-in for QVariant (Qt 5.14, aarch64). QVariant has
+// non-trivial copy-ctor + dtor, so per AAPCS64 it is returned via the hidden
+// `x8` sret pointer — NOT in {x0,x1}. To force the calling compiler to use
+// the same convention as the real QObject::property() implementation, we
+// declare our proxy with a user-provided dtor + copy-ctor (which makes the
+// type "non-trivial for calls"). With that in place, declaring a function
+// pointer of type `FakeQVariant (*)(...)` produces the correct sret call.
+//
+// Memory layout matches QVariant 5.14:
+//   0..7   data union (raw double / int / pointer)
+//   8..11  type:30 | is_shared:1 | is_null:1
+//   12..15 padding
+//
+// Heads up: leaks refcount when the returned QVariant owns shared resources
+// (QString, QByteArray, …). Fine for primitives + QObjectStar, which is all
+// we read here.
+class FakeQVariant {
+public:
+    uint64_t data;
+    uint64_t flags;
+    FakeQVariant() : data(0), flags(0) {}
+    ~FakeQVariant() {}                              // user-provided → sret
+    FakeQVariant(const FakeQVariant&) {}            // user-provided → sret
+    FakeQVariant& operator=(const FakeQVariant&) { return *this; }
+};
+static_assert(sizeof(FakeQVariant) == 16, "QVariant size mismatch");
+
+// QMetaType ids we care about.
+enum {
+    QMT_Bool    = 1,
+    QMT_Int     = 2,
+    QMT_UInt    = 3,
+    QMT_Double  = 6,
+    QMT_Float   = 38,
+    QMT_QObjectStar = 39,
+};
+
+using qobj_property_fn = FakeQVariant (*)(const void* self, const char* name);
+static qobj_property_fn p_qobj_property = nullptr;
+
+static void resolve_qt_introspection() {
+    if (p_qobj_property) return;
+    p_qobj_property = (qobj_property_fn)dlsym(RTLD_NEXT, "_ZNK7QObject8propertyEPKc");
+    if (!p_qobj_property)
+        qplog_c("[qpext-air] FATAL: dlsym QObject::property failed");
+}
+
+static uint32_t qvar_type(const FakeQVariant& v) { return v.flags & 0x3FFFFFFF; }
+
+static void* qvar_to_qobject(const FakeQVariant& v) {
+    return (qvar_type(v) == QMT_QObjectStar) ? (void*)v.data : nullptr;
+}
+
+static bool qvar_to_double(const FakeQVariant& v, double& out) {
+    switch (qvar_type(v)) {
+        case QMT_Double: { memcpy(&out, &v.data, sizeof(double)); return true; }
+        case QMT_Float:  { float f; memcpy(&f, &v.data, sizeof(float)); out = f; return true; }
+        case QMT_Int:    { int32_t i; memcpy(&i, &v.data, sizeof(int32_t)); out = i; return true; }
+        case QMT_UInt:   { uint32_t u; memcpy(&u, &v.data, sizeof(uint32_t)); out = u; return true; }
+        default: return false;
+    }
+}
+
+// Walk airdataController.air<X>.value for every metric we know about, snap
+// the values into g_air. Called every telemetry tick; cheap (one Qt
+// property() call per air metric — ~10 reads).
+static void poll_airdata() {
+    resolve_qt_introspection();
+    if (!p_qobj_property) return;
+    pthread_mutex_lock(&g_ctrl_mu);
+    void* ctrl = g_airdata_controller;
+    pthread_mutex_unlock(&g_ctrl_mu);
+    if (!ctrl) return;
+
+    static const struct { const char* qml_child; const char* topic; } air_map[] = {
+        {"airTEMP",  "temperature"},
+        {"airHUMI",  "humidity"},
+        {"airCO2",   "co2"},
+        {"airPM10",  "pm10"},
+        {"airPM25",  "pm25"},
+        {"airTVOC",  "tvoc"},
+        {"airNoise", "noise"},
+        {"airPMV",   "pmv"},
+        {"airPOA",   "poa"},
+        {"airAQI",   "aqi"},
+    };
+    pthread_mutex_lock(&g_air_mu);
+    for (auto& m : air_map) {
+        FakeQVariant child_var = p_qobj_property(ctrl, m.qml_child);
+        // QObject*-derived custom types register their own metatype id but
+        // QVariant's storage IS the raw pointer (verified empirically; grep
+        // QingSnow2App for AirData* and Q_PROPERTY).
+        void* child = nullptr;
+        uint32_t t = qvar_type(child_var);
+        if (t == QMT_QObjectStar) child = (void*)child_var.data;
+        else if (t > 0 && child_var.data > 0x1000) child = (void*)child_var.data;
+        if (!child) continue;
+        // AirData exposes `rawValue` (qreal) for the numeric reading; the
+        // QML side uses `valueString` for the already-formatted display.
+        FakeQVariant val_var = p_qobj_property(child, "rawValue");
+        double d;
+        if (!qvar_to_double(val_var, d)) continue;
+        // QingSnow2App uses 99999 (and similar runaway integers) as a
+        // sentinel for "metric not yet computed / sensor warming up" —
+        // most visible on airAQI before PM/CO2 have stabilised. Drop these
+        // so HA shows the entity as `unknown` rather than a misleading
+        // five-digit number.
+        if (d > 99000) continue;
+        g_air[m.topic] = d;
+    }
+    pthread_mutex_unlock(&g_air_mu);
+}
+
+// Light is updated by the kernel driver — read directly from sysfs since
+// QingSnow2App doesn't seem to log it through the updateValu channel.
+static int read_light_lux() {
+    std::string s = slurp("/sys/devices/platform/ff190000.i2c/i2c-1/1-0045/light_opt3004_read");
+    auto eq = s.find('=');
+    if (eq == std::string::npos) return 0;
+    return atoi(s.c_str() + eq + 1);
+}
+
+} // namespace
+
+// Called from qpext.cpp's hooked QQmlContext::setContextProperty —
+// captures the live `airdataController` QObject pointer once QingSnow2App
+// registers it on the QML root context. poll_airdata() reads from it on
+// every telemetry tick.
+extern "C" void qpext_set_airdata_controller(void* obj) {
+    pthread_mutex_lock(&g_ctrl_mu);
+    g_airdata_controller = obj;
+    pthread_mutex_unlock(&g_ctrl_mu);
+    qplog_c("[qpext-air] airdataController QObject = %p", obj);
+}
+
+namespace {
+
+// ---------------------------------------------------------------------------
 // Sensor sampling
 // ---------------------------------------------------------------------------
 
@@ -360,17 +529,19 @@ static int tcp_open(const char* host, int port) {
 // Discovery topic for one sensor.
 static void publish_discovery(int fd, const MqttCfg& c) {
     const std::string dev_id  = "qpext_" + c.mac_norm;
+    const std::string sw_version = "fw " + g_fw_version + " · qpext " QPEXT_VERSION;
     const std::string dev_blk = "\"device\":{"
         "\"identifiers\":[\"" + dev_id + "\"],"
-        "\"name\":\"Airmonitor (qpext)\","
+        "\"name\":\"Airmonitor App Extension\","
         "\"manufacturer\":\"Qingping\","
         "\"model\":\"Air Monitor 2\","
-        "\"sw_version\":\"qpext " QPEXT_VERSION "\","
+        "\"sw_version\":\"" + sw_version + "\","
         "\"connections\":[[\"mac\",\"" + c.mac + "\"]]"
         "}";
 
     auto sensor = [&](const char* key, const char* name, const char* unit,
-                      const char* dev_class, const char* icon = "")
+                      const char* dev_class, const char* icon = "",
+                      bool numeric = true)
     {
         std::string cfg_topic = "homeassistant/sensor/" + dev_id + "/" + key + "/config";
         std::string state_topic = "qpext/" + c.mac_norm + "/" + key;
@@ -382,17 +553,44 @@ static void publish_discovery(int fd, const MqttCfg& c) {
         if (unit && *unit) payload += "\"unit_of_measurement\":\""+std::string(unit)+"\",";
         if (dev_class && *dev_class) payload += "\"device_class\":\""+std::string(dev_class)+"\",";
         if (icon && *icon) payload += "\"icon\":\""+std::string(icon)+"\",";
-        payload += "\"state_class\":\"measurement\","+dev_blk+"}";
+        // state_class=measurement only makes sense for numeric sensors;
+        // skip for text values like version strings — HA logs a warning
+        // otherwise and refuses to graph them as numbers (which they aren't).
+        if (numeric) payload += "\"state_class\":\"measurement\",";
+        payload += dev_blk + "}";
         mqtt_publish(fd, cfg_topic, payload, /*retain=*/true);
     };
 
-    sensor("soc_temp",     "Airmonitor SoC temperature",     "°C",  "temperature");
-    sensor("gpu_temp",     "Airmonitor GPU temperature",     "°C",  "temperature");
-    sensor("battery_temp", "Airmonitor battery temperature", "°C",  "temperature");
-    sensor("cpu",          "Airmonitor CPU usage",           "%",   "",            "mdi:chip");
-    sensor("ram_free",     "Airmonitor RAM free",            "MiB", "data_size");
-    sensor("uptime",       "Airmonitor uptime",              "s",   "duration");
-    sensor("cam_status",   "Airmonitor camera status",       "",    "",            "mdi:cctv");
+    // Entity friendly names are short on purpose — the HA device card
+    // already shows "Airmonitor App Extension <MAC>" above them, so
+    // repeating the prefix on every entity is just noise.
+
+    // Versions (text — non-numeric).
+    sensor("fw_version",    "Firmware",          "",  "",  "mdi:tag-outline",       /*numeric=*/false);
+    sensor("qpext_version", "Extension version", "",  "",  "mdi:package-variant",   /*numeric=*/false);
+
+    // System telemetry
+    sensor("soc_temp",     "SoC temperature",     "°C",  "temperature");
+    sensor("gpu_temp",     "GPU temperature",     "°C",  "temperature");
+    sensor("battery_temp", "Battery temperature", "°C",  "temperature");
+    sensor("cpu",          "CPU usage",           "%",   "",            "mdi:chip");
+    sensor("ram_free",     "RAM free",            "MiB", "data_size");
+    sensor("uptime",       "Uptime",              "s",   "duration");
+    sensor("cam_status",   "Camera status",       "",    "",            "mdi:cctv");
+
+    // Air quality (calibrated values pulled from QingSnow2App's own
+    // SQLite store — same numbers the device's UI displays).
+    sensor("temperature",  "Temperature",         "°C",  "temperature");
+    sensor("humidity",     "Humidity",            "%",   "humidity");
+    sensor("co2",          "CO₂ equivalent",      "ppm", "carbon_dioxide");
+    sensor("pm10",         "PM10",                "µg/m³","pm10");
+    sensor("pm25",         "PM2.5",               "µg/m³","pm25");
+    sensor("tvoc",         "TVOC index",          "",    "",            "mdi:molecule");
+    sensor("noise",        "Noise",               "dB",  "sound_pressure");
+    sensor("light",        "Illuminance",         "lx",  "illuminance");
+    sensor("pmv",          "Thermal comfort (PMV)", "",  "",            "mdi:thermometer-lines");
+    sensor("poa",          "Predicted comfort",     "%", "",            "mdi:gauge");
+    sensor("aqi",          "Air Quality Index",     "",  "aqi");
 
     // Helper: tab-navigation button. Publishes {"action":"switch_tab","name":"<tab>"}.
     auto tab_button = [&](const char* key, const char* label,
@@ -401,7 +599,7 @@ static void publish_discovery(int fd, const MqttCfg& c) {
         std::string cfg_topic = "homeassistant/button/" + dev_id + "/" + key + "/config";
         std::string cmd_topic = "qpext/" + c.mac_norm + "/cmd";
         std::string payload =
-            "{\"name\":\"Airmonitor "+std::string(label)+"\","
+            "{\"name\":\""+std::string(label)+"\","
              "\"uniq_id\":\""+dev_id+"_"+key+"\","
              "\"command_topic\":\""+cmd_topic+"\","
              "\"payload_press\":\"{\\\"action\\\":\\\"switch_tab\\\",\\\"name\\\":\\\""+
@@ -411,19 +609,19 @@ static void publish_discovery(int fd, const MqttCfg& c) {
     };
 
     // One button per visible tab in MainPage.qml's PathView model.
-    tab_button("show_air",      "show air data",     "airDatasView",      "mdi:weather-cloudy");
-    tab_button("show_summary",  "show summary",      "summaryView",       "mdi:chart-line");
-    tab_button("show_settings", "show settings",     "settingView",       "mdi:cog");
-    tab_button("show_app",      "show app",          "appView",           "mdi:apps");
-    tab_button("show_ha",       "show HA dashboard", "qpextView",         "mdi:home-assistant");
-    tab_button("show_camera",   "show camera",       "qpextCamerasView",  "mdi:cctv");
+    tab_button("show_air",      "Show air data",     "airDatasView",      "mdi:weather-cloudy");
+    tab_button("show_summary",  "Show summary",      "summaryView",       "mdi:chart-line");
+    tab_button("show_settings", "Show settings",     "settingView",       "mdi:cog");
+    tab_button("show_app",      "Show app",          "appView",           "mdi:apps");
+    tab_button("show_ha",       "Show HA dashboard", "qpextView",         "mdi:home-assistant");
+    tab_button("show_camera",   "Show camera",       "qpextCamerasView",  "mdi:cctv");
 
     // Button: reboot device. uses HA "button" component.
     {
         std::string cfg_topic = "homeassistant/button/" + dev_id + "/reboot/config";
         std::string cmd_topic = "qpext/" + c.mac_norm + "/cmd";
         std::string payload =
-            "{\"name\":\"Airmonitor reboot\","
+            "{\"name\":\"Reboot\","
              "\"uniq_id\":\""+dev_id+"_reboot\","
              "\"command_topic\":\""+cmd_topic+"\","
              "\"payload_press\":\"{\\\"action\\\":\\\"reboot\\\"}\","
@@ -506,14 +704,13 @@ static bool write_file_atomic(const char* path, const std::string& data) {
     return rename(tmp.c_str(), path) == 0;
 }
 
-// Apply a `dashboard/set` MQTT message — merge into widgets.json, preserving
-// the local `ha` block (so the HA token never has to travel over MQTT). The
-// payload is a JSON object with arbitrary top-level keys (`widgets`, `events`,
-// ...); each replaces the corresponding key in widgets.json.
+// Apply a `dashboard/set` MQTT message: validate it's a JSON object, then
+// write it verbatim to /data/qpext/widgets.json. After the ha-config split
+// (ha.* lives in /data/qpext/ha.json now) widgets.json is purely the
+// HA-integration-managed cache of {widgets, events} — no merging required.
 static void handle_dashboard_set(const std::string& payload) {
-    // Parse payload.
     jsmn_parser pp;
-    std::vector<jsmntok_t> ptoks(512);
+    std::vector<jsmntok_t> ptoks(256);
     int pnt;
     for (;;) {
         jsmn_init(&pp);
@@ -526,54 +723,9 @@ static void handle_dashboard_set(const std::string& payload) {
         qplog_c("[qpext-mqtt] dashboard/set: not a JSON object (nt=%d)", pnt);
         return;
     }
-
-    // Read current widgets.json to preserve the ha block.
-    std::string cur = slurp("/data/qpext/widgets.json");
-    std::string ha_slice = "{}";
-    if (!cur.empty()) {
-        jsmn_parser cp;
-        std::vector<jsmntok_t> ctoks(512);
-        int cnt;
-        for (;;) {
-            jsmn_init(&cp);
-            cnt = jsmn_parse(&cp, cur.data(), cur.size(),
-                             ctoks.data(), (int)ctoks.size());
-            if (cnt == JSMN_ERROR_NOMEM) { ctoks.resize(ctoks.size() * 2); continue; }
-            break;
-        }
-        if (cnt > 0 && ctoks[0].type == JSMN_OBJECT) {
-            int ch = obj_find(cur.c_str(), ctoks.data(), cnt, 0, "ha");
-            if (ch >= 0) ha_slice = cur.substr(ctoks[ch].start,
-                                               ctoks[ch].end - ctoks[ch].start);
-        }
-    }
-
-    // Rebuild: {"ha": <preserved>, ...all-other-keys-from-payload}
-    std::string out;
-    out.reserve(payload.size() + ha_slice.size() + 64);
-    out = "{\n  \"ha\": " + ha_slice;
-    int n_keys = ptoks[0].size;
-    int i = 1;
-    int extra_keys = 0;
-    for (int k = 0; k < n_keys && i < pnt; ++k) {
-        const jsmntok_t& key_tok = ptoks[i];
-        if (i + 1 >= pnt) break;
-        const jsmntok_t& val_tok = ptoks[i + 1];
-        std::string key_str = payload.substr(key_tok.start,
-                                             key_tok.end - key_tok.start);
-        if (key_str != "ha") {
-            std::string val_str = payload.substr(val_tok.start,
-                                                 val_tok.end - val_tok.start);
-            out += ",\n  \"" + key_str + "\": " + val_str;
-            ++extra_keys;
-        }
-        i = skip_tok(ptoks.data(), pnt, i + 1);
-    }
-    out += "\n}\n";
-
-    if (write_file_atomic("/data/qpext/widgets.json", out)) {
-        qplog_c("[qpext-mqtt] dashboard/set applied: %d top-level keys, %zu bytes",
-                extra_keys, out.size());
+    if (write_file_atomic("/data/qpext/widgets.json", payload)) {
+        qplog_c("[qpext-mqtt] dashboard/set applied: %zu bytes (%d top-level keys)",
+                payload.size(), ptoks[0].size);
     } else {
         qplog_c("[qpext-mqtt] dashboard/set: write failed");
     }
@@ -602,6 +754,8 @@ static void handle_cmd(const std::string& payload) {
 }
 
 static void* mqtt_thread_fn(void*) {
+    read_fw_version();
+    qplog_c("[qpext-mqtt] fw=%s qpext=%s", g_fw_version.c_str(), QPEXT_VERSION);
     MqttCfg cfg;
     while (!read_cfg(cfg)) sleep(2);
     qplog_c("[qpext-mqtt] cfg host=%s:%d user=%s mac=%s",
@@ -645,11 +799,20 @@ static void* mqtt_thread_fn(void*) {
                 // type 0x9 = SUBACK, 0xD = PINGRESP — ignore
             }
 
-            // Telemetry every 10s.
-            if (now - last_telem >= 10) {
+            // Telemetry every 3s. All publishes are local (~17 small messages
+            // per tick) and the air-data introspection is just ~20 cheap
+            // QObject::property calls — no measurable overhead.
+            if (now - last_telem >= 3) {
                 last_telem = now;
                 char buf[64];
                 std::string base = "qpext/" + cfg.mac_norm + "/";
+
+                // Versions — static for the life of the process, but cheap
+                // and lets HA pick them up immediately after subscribing.
+                mqtt_publish(fd, base + "fw_version",    g_fw_version);
+                mqtt_publish(fd, base + "qpext_version", QPEXT_VERSION);
+
+                // System
                 snprintf(buf, sizeof(buf), "%.1f", read_int("/sys/class/thermal/thermal_zone0/temp")/1000.0);
                 mqtt_publish(fd, base + "soc_temp", buf);
                 snprintf(buf, sizeof(buf), "%.1f", read_int("/sys/class/thermal/thermal_zone1/temp")/1000.0);
@@ -665,6 +828,34 @@ static void* mqtt_thread_fn(void*) {
                 std::string camst;
                 qpext_get_cam_status_into(&camst);
                 mqtt_publish(fd, base + "cam_status", camst);
+
+                // Air quality — snap straight from `airdataController.air*.value`
+                // via Qt introspection. Only metrics whose QObject is reachable
+                // get published; HA leaves the others at "unknown" until the
+                // QML side wires them up.
+                poll_airdata();
+                std::map<std::string, double> snap;
+                pthread_mutex_lock(&g_air_mu);
+                snap = g_air;
+                pthread_mutex_unlock(&g_air_mu);
+                auto pub_air = [&](const char* topic, int prec) {
+                    auto it = snap.find(topic);
+                    if (it == snap.end()) return;
+                    snprintf(buf, sizeof(buf), "%.*f", prec, it->second);
+                    mqtt_publish(fd, base + topic, buf);
+                };
+                pub_air("temperature", 1);
+                pub_air("humidity",    1);
+                pub_air("co2",         0);
+                pub_air("pm10",        1);
+                pub_air("pm25",        1);
+                pub_air("tvoc",        0);
+                pub_air("noise",       0);
+                pub_air("pmv",         2);
+                pub_air("poa",         0);
+                pub_air("aqi",         0);
+                snprintf(buf, sizeof(buf), "%d", read_light_lux());
+                mqtt_publish(fd, base + "light", buf);
             }
 
             // Keepalive ping every 20s.

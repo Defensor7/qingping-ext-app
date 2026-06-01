@@ -92,15 +92,22 @@ NOTES.md                     полные технические заметки 
 
 ## Что устройство получает в HA после установки
 
-- Сенсоры: SoC / GPU / battery temperature, CPU%, RAM free, uptime,
-  camera status (всё `qpext_<mac>_*`)
-- Кнопки: reboot + по кнопке на каждую вкладку приложения
-  (`show_air`, `show_summary`, `show_settings`, `show_app`, `show_ha`,
-  `show_camera`)
-- Девайс под именем `Airmonitor (qpext)` — обе кнопки и сенсоры группируются
-  под ним
+Один девайс **Airmonitor App Extension** (`qpext_<MAC>`), под ним:
+
+- **Воздух** (live из QML `airdataController.air<X>.rawValue` через
+  Qt-runtime introspection — см. NOTES §3.6):
+  Temperature, Humidity, CO₂, PM10, PM2.5, TVOC, Noise, PMV, POA, AQI
+- **Освещённость**: lux из OPT3004 (`1-0045/light_opt3004_read`)
+- **Системные**: SoC / GPU / battery temp, CPU%, RAM free, Uptime, Camera status
+- **Версии** (текстовые сенсоры): Firmware (`4.5.6_0167` —
+  `CLEARGRASS_VERSION` из `/qingping/etc/os-release`), Extension
+  (git-describe-вывод, `v0.1.0-…`)
+- **Кнопки**: Reboot · Show air data · Show summary · Show settings ·
+  Show app · Show HA dashboard · Show camera
 - Топик `qpext/<mac>/dashboard/set` (retained) — куда HA-интеграция шлёт
-  состав дашборда
+  состав дашборда устройства (виджеты + триггеры)
+
+Телеметрия — каждые 3 секунды.
 
 ## Подробности
 

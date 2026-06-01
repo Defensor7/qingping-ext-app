@@ -38,7 +38,7 @@ hot-reload'ит панель за ~1.5 с.
      ввода MAC.
 
    - **Ручной ввод** — fallback для случая «устройство ещё не публиковало
-     `qpext/<mac>/info`». **Add integration** → искать *Qpext Airmonitor*,
+     `qpext/<mac>/info`». **Add integration** → искать *Airmonitor App Extension*,
      ввести MAC (12 hex-символов с разделителями или без — например
      `58:2D:34:70:A8:73` или `582D3470A873`). MAC берётся из
      `[device] wifi_mac` в `/data/etc/setting.ini` на устройстве.

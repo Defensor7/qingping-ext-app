@@ -6,6 +6,7 @@
 qpext/qml/cameras.json
 qpext/qml/widgets.json
 qpext/qml/mqtt.json
+qpext/qml/ha.json
 qpext/qml/version.txt
 
 # Local debug stack state (HA storage, db, token cache).

@@ -1,4 +1,4 @@
-"""Config + options flow for Qpext Airmonitor.
+"""Config + options flow for Airmonitor App Extension.
 
 There are two ways into the integration:
 
@@ -83,7 +83,7 @@ class QpextConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 await self.async_set_unique_id(mac)
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(
-                    title=f"Airmonitor {mac}",
+                    title=f"Airmonitor App Extension {mac}",
                     data={CONF_MAC: mac},
                     options={CONF_WIDGETS: [], CONF_EVENTS: []},
                 )
@@ -131,7 +131,7 @@ class QpextConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._discovered_info = info
         # Surface the device in the "Discovered" section with a friendly name.
         self.context["title_placeholders"] = {
-            "name": f"Airmonitor {mac}",
+            "name": f"Airmonitor App Extension {mac}",
         }
         return await self.async_step_discovery_confirm()
 
@@ -143,7 +143,7 @@ class QpextConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         mac = self._discovered_mac
         if user_input is not None:
             return self.async_create_entry(
-                title=f"Airmonitor {mac}",
+                title=f"Airmonitor App Extension {mac}",
                 data={CONF_MAC: mac},
                 options={CONF_WIDGETS: [], CONF_EVENTS: []},
             )

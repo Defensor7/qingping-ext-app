@@ -9,7 +9,7 @@ adb -s "$DEV" shell '
 set -e
 cd /data/qpext
 restored=0
-for f in mqtt.json widgets.json; do
+for f in mqtt.json ha.json widgets.json; do
     if [ -f "$f.prod" ]; then
         mv -f "$f.prod" "$f"
         echo "[restore-remote] restored $f from $f.prod"

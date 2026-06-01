@@ -1,6 +1,7 @@
 Qt_5 {
     global:
         _ZN21QQmlApplicationEngine4loadERK4QUrl;
+        _ZN11QQmlContext18setContextPropertyERK7QStringP7QObject;
     local:
         *;
 };

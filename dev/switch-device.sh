@@ -35,11 +35,13 @@ TOKEN=$(cat "$TOKEN_FILE" | tr -d '\r\n')
 
 echo "[switch] device → debug stack at $LAN_IP"
 
-# 1. Snapshot the production configs.
+# 1. Snapshot the production configs. widgets.json is included so
+#    `restore-device.sh` can put back any in-place state from before the
+#    debug HA integration started overwriting it.
 adb -s "$DEV" shell '
 set -e
 cd /data/qpext
-for f in mqtt.json widgets.json; do
+for f in mqtt.json ha.json widgets.json; do
     if [ -f "$f" ] && [ ! -f "$f.prod" ]; then
         cp "$f" "$f.prod"
         echo "[switch-remote] backed up $f → $f.prod"
@@ -47,7 +49,7 @@ for f in mqtt.json widgets.json; do
 done
 '
 
-# 2. Write debug mqtt.json (anonymous, localhost via the LAN IP).
+# 2. Write debug mqtt.json (anonymous broker on the Mac).
 TMP=$(mktemp)
 cat > "$TMP" <<EOF
 {
@@ -60,30 +62,21 @@ EOF
 adb -s "$DEV" push "$TMP" /data/qpext/mqtt.json >/dev/null
 rm "$TMP"
 
-# 3. Rewrite widgets.json's ha.{base_url,token}, leaving widgets[] /
-#    events[] untouched. The device has no python, so we do the JSON
-#    surgery locally on the Mac and push the result back.
-LOCAL=$(mktemp)
-adb -s "$DEV" pull /data/qpext/widgets.json "$LOCAL" >/dev/null 2>&1 || \
-    printf '{"ha":{},"widgets":[],"events":[]}\n' > "$LOCAL"
-python3 - "$LOCAL" "$LAN_IP" "$TOKEN" <<'PYEOF'
-import json, os, sys
-path, lan_ip, token = sys.argv[1], sys.argv[2], sys.argv[3]
-try:
-    with open(path) as f:
-        data = json.load(f)
-except Exception:
-    data = {"ha": {}, "widgets": [], "events": []}
-data.setdefault("ha", {})
-data["ha"]["base_url"] = f"http://{lan_ip}:8123"
-data["ha"]["token"]    = token
-with open(path + ".tmp", "w") as f:
-    json.dump(data, f, indent=2, ensure_ascii=False)
-os.rename(path + ".tmp", path)
-PYEOF
-adb -s "$DEV" push "$LOCAL" /data/qpext/widgets.json >/dev/null
-rm "$LOCAL"
-echo "[switch] widgets.json ha.{base_url,token} rewritten"
+# 3. Write debug ha.json pointing at the local HA + the long-lived token
+#    minted by bootstrap_ha.py. widgets.json is left alone — once the user
+#    completes the discovery flow in the debug HA, the integration will
+#    publish its (initially empty) widget composition over MQTT and the
+#    shim will overwrite widgets.json accordingly.
+TMP=$(mktemp)
+cat > "$TMP" <<EOF
+{
+  "base_url": "http://$LAN_IP:8123",
+  "token":    "$TOKEN"
+}
+EOF
+adb -s "$DEV" push "$TMP" /data/qpext/ha.json >/dev/null
+rm "$TMP"
+echo "[switch] /data/qpext/ha.json rewritten for debug stack"
 
 # 4. Force a clean restart so MQTT reconnects to the new broker.
 adb -s "$DEV" shell "pkill -9 gst-launch; pkill QingSnow2App || true; sleep 1; pidof QingSnow2App.real | head -1 | xargs -I{} kill -9 {} 2>/dev/null || true" >/dev/null

@@ -8,7 +8,7 @@ import Qing.Controls 1.0
 Item {
     id: impl
     anchors.fill: parent
-    readonly property int revision: 15
+    readonly property int revision: 16
     readonly property int topGap: 72
     readonly property int widgetHeight: 180
     // Loaded once on creation from /data/qpext/version.txt, which deploy.sh
@@ -25,8 +25,33 @@ Item {
             console.log("[qpext] mdi font load error")
     }
 
-    // --- config ----------------------------------------------------------
-    property var config: ({ ha: { base_url: "", token: "" }, widgets: [] })
+    // --- HA credentials (user-managed, /data/qpext/ha.json) ---------------
+    // Used only for outgoing REST service-calls. State pull happens on the
+    // shim side over WebSocket; QML reads /data/qpext/state.json (below).
+    property var haConfig: ({ base_url: "", token: "" })
+    property string haConfigSig: ""
+
+    function loadHaConfig() {
+        var xhr = new XMLHttpRequest()
+        xhr.open("GET", "file:///data/qpext/ha.json")
+        xhr.onreadystatechange = function() {
+            if (xhr.readyState !== XMLHttpRequest.DONE) return
+            if (xhr.status !== 0 && xhr.status !== 200) return
+            var t = xhr.responseText
+            if (!t) return
+            var sig = t.length + ":" + t.substring(0, 32)
+            if (sig === impl.haConfigSig) return
+            impl.haConfigSig = sig
+            try { impl.haConfig = JSON.parse(t) }
+            catch (e) { console.log("[qpext] ha.json parse error:", e) }
+        }
+        xhr.send()
+    }
+
+    // --- dashboard composition (HA-integration-managed, /data/qpext/widgets.json)
+    // Pure {widgets, events} object; written by qpext_mqtt.cpp on every
+    // qpext/<mac>/dashboard/set retained message. No ha section any more.
+    property var config: ({ widgets: [] })
     property string configSig: ""
 
     function loadConfig(silent) {
@@ -87,10 +112,10 @@ Item {
     }
 
     function callService(domain, service, data) {
-        if (!config.ha || !config.ha.base_url || !config.ha.token) return
+        if (!haConfig.base_url || !haConfig.token) return
         var xhr = new XMLHttpRequest()
-        xhr.open("POST", config.ha.base_url + "/api/services/" + domain + "/" + service)
-        xhr.setRequestHeader("Authorization", "Bearer " + config.ha.token)
+        xhr.open("POST", haConfig.base_url + "/api/services/" + domain + "/" + service)
+        xhr.setRequestHeader("Authorization", "Bearer " + haConfig.token)
         xhr.setRequestHeader("Content-Type", "application/json")
         xhr.onreadystatechange = function() {
             if (xhr.readyState !== XMLHttpRequest.DONE) return
@@ -104,6 +129,10 @@ Item {
     Timer { interval: 250; running: true; repeat: true; onTriggered: pollState() }
     Timer { interval: 1500; running: true; repeat: true; triggeredOnStart: true
             onTriggered: loadConfig(true) }
+    // ha.json changes less often (only on install / dev/switch-device.sh),
+    // a slow poll is enough — picks up token rotation without restart.
+    Timer { interval: 5000; running: true; repeat: true; triggeredOnStart: true
+            onTriggered: loadHaConfig() }
 
     // --- helpers for widgets --------------------------------------------
     // Resolve component path. snake_case → CamelCase, so "media_player" → "MediaPlayer.qml".
@@ -145,10 +174,22 @@ Item {
 
         QText {
             Layout.fillWidth: true
-            visible: !config.ha || !config.ha.token || config.ha.token.indexOf("PUT_") === 0
-            text: "edit /data/qpext/widgets.json: set ha.base_url and ha.token"
+            visible: !haConfig.base_url || !haConfig.token ||
+                     haConfig.token.indexOf("PUT_") === 0
+            text: "edit /data/qpext/ha.json: set base_url and token"
             wrapMode: Text.WrapAnywhere
             color: "#ffaa55"
+            font.pixelSize: 13
+        }
+
+        QText {
+            Layout.fillWidth: true
+            visible: (config.widgets || []).length === 0 &&
+                     haConfig.base_url && haConfig.token &&
+                     haConfig.token.indexOf("PUT_") !== 0
+            text: "no widgets configured — add them via the qpext_airmonitor integration in HA"
+            wrapMode: Text.WrapAnywhere
+            color: "#88aacc"
             font.pixelSize: 13
         }
 
@@ -249,6 +290,7 @@ Item {
     Component.onCompleted: {
         console.log("[qpext] HelloImpl.qml rev=" + impl.revision + " loaded")
         loadVersion()
+        loadHaConfig()
         loadConfig(false)
     }
 }

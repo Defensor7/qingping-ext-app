@@ -159,12 +159,24 @@ struct HaConfig {
     bool valid() const { return !host.empty() && !token.empty(); }
 };
 
-static bool parse_config(HaConfig& cfg) {
-    std::string raw = read_file("/data/qpext/widgets.json");
-    if (raw.empty()) return false;
+// Find the "ha" credentials: prefer the post-split /data/qpext/ha.json
+// (top-level {base_url, token}); fall back to the legacy
+// /data/qpext/widgets.json with an embedded {"ha": {...}} block, for
+// devices that haven't been re-installed since the split. Returns the
+// `base_url` and `token` strings as substring slices of `raw`, with
+// `raw` being whichever file was actually read.
+struct HaCreds { std::string base_url; std::string token; };
 
+static bool read_ha_creds(HaCreds& out) {
+    std::string raw = read_file("/data/qpext/ha.json");
+    bool nested = false;
+    if (raw.empty()) {
+        raw = read_file("/data/qpext/widgets.json");
+        if (raw.empty()) return false;
+        nested = true;
+    }
     jsmn_parser p; jsmn_init(&p);
-    int cap = 1024;
+    int cap = 256;
     std::vector<jsmntok_t> toks(cap);
     int nt;
     for (;;) {
@@ -174,20 +186,29 @@ static bool parse_config(HaConfig& cfg) {
     }
     if (nt < 1 || toks[0].type != JSMN_OBJECT) return false;
 
-    int ha = obj_find(raw.c_str(), toks.data(), nt, 0, "ha");
-    if (ha < 0) return false;
-    int uri = obj_find(raw.c_str(), toks.data(), nt, ha, "base_url");
-    int tok = obj_find(raw.c_str(), toks.data(), nt, ha, "token");
+    int root = 0;
+    if (nested) {
+        root = obj_find(raw.c_str(), toks.data(), nt, 0, "ha");
+        if (root < 0) return false;
+    }
+    int uri = obj_find(raw.c_str(), toks.data(), nt, root, "base_url");
+    int tok = obj_find(raw.c_str(), toks.data(), nt, root, "token");
     if (uri < 0 || tok < 0) return false;
+    out.base_url = tok_str(raw.c_str(), &toks[uri]);
+    out.token    = tok_str(raw.c_str(), &toks[tok]);
+    return true;
+}
 
-    cfg.token = tok_str(raw.c_str(), &toks[tok]);
-    if (cfg.token.empty() || cfg.token.find("PUT_") == 0) return false;
+static bool parse_config(HaConfig& cfg) {
+    HaCreds creds;
+    if (!read_ha_creds(creds)) return false;
+    if (creds.token.empty() || creds.token.find("PUT_") == 0) return false;
+    cfg.token = creds.token;
 
     // Parse http://host:port[/path]. We only support plain http.
-    std::string u = tok_str(raw.c_str(), &toks[uri]);
     const char* prefix = "http://";
-    if (u.compare(0, 7, prefix) != 0) return false;
-    std::string rest = u.substr(7);
+    if (creds.base_url.compare(0, 7, prefix) != 0) return false;
+    std::string rest = creds.base_url.substr(7);
     size_t sl = rest.find('/');
     std::string hp = (sl == std::string::npos) ? rest : rest.substr(0, sl);
     size_t colon = hp.find(':');

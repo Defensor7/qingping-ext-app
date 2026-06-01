@@ -111,15 +111,33 @@ else
 fi
 
 # ---- prepare local config files --------------------------------------------
-# We edit locally and let deploy.sh sync the whole qml/ tree to the device.
-# If a local file is missing:
-#   (a) and a non-empty version exists on the device → pull it down (preserves
-#       any in-place config from previous installs / manual edits)
-#   (b) otherwise → seed from the .example template and ask the user to edit
-# In either case, refuse to deploy while placeholder values remain.
+# Editable-locally → deploy.sh sync sends the whole qml/ tree to the device.
+# For each user-managed file (mqtt.json, ha.json, cameras.json):
+#   (a) if missing locally but the device has one → pull it down
+#   (b) otherwise → seed from the .example template, ask the user to edit
+# widgets.json is NOT user-managed any more — the qpext_airmonitor HA
+# integration owns it and the shim writes it on every dashboard/set MQTT
+# message. We migrate any legacy widgets.json that still has an embedded
+# `ha` block: ha.* moves to ha.json, the rest stays as the cache.
 NEEDS_EDIT=0
 if [ $DO_SEED -eq 1 ]; then
-    for f in mqtt.json cameras.json widgets.json; do
+    # Migration: extract ha.* out of a legacy widgets.json into ha.json.
+    if [ ! -f "$REPO/qpext/qml/ha.json" ] && \
+       [ -f "$REPO/qpext/qml/widgets.json" ] && \
+       grep -q '"ha"' "$REPO/qpext/qml/widgets.json" 2>/dev/null; then
+        say "migrating legacy ha.* from widgets.json → ha.json"
+        python3 - "$REPO/qpext/qml/widgets.json" "$REPO/qpext/qml/ha.json" <<'PYEOF'
+import json, sys
+src, dst = sys.argv[1], sys.argv[2]
+with open(src) as f: data = json.load(f)
+ha = data.pop("ha", None)
+if ha:
+    with open(dst, "w") as f: json.dump(ha, f, indent=2, ensure_ascii=False)
+with open(src, "w") as f: json.dump(data, f, indent=2, ensure_ascii=False)
+PYEOF
+    fi
+
+    for f in mqtt.json ha.json cameras.json; do
         local_f="$REPO/qpext/qml/$f"
         if [ ! -f "$local_f" ]; then
             if adb -s "$DEVICE" shell "[ -s /data/qpext/$f ] && echo OK" 2>/dev/null | grep -q OK; then
@@ -135,8 +153,8 @@ if [ $DO_SEED -eq 1 ]; then
 
     # Placeholder detection. The strings below appear ONLY in the .example
     # templates; any real config will have replaced them.
-    if grep -q 'PUT_LONG_LIVED_ACCESS_TOKEN_HERE' "$REPO/qpext/qml/widgets.json" 2>/dev/null; then
-        warn "qpext/qml/widgets.json still has a placeholder \`ha.token\`"
+    if grep -q 'PUT_LONG_LIVED_ACCESS_TOKEN_HERE' "$REPO/qpext/qml/ha.json" 2>/dev/null; then
+        warn "qpext/qml/ha.json still has a placeholder \`token\`"
         NEEDS_EDIT=1
     fi
     if grep -q 'USER:PASS' "$REPO/qpext/qml/cameras.json" 2>/dev/null; then
@@ -153,7 +171,7 @@ if [ $DO_SEED -eq 1 ]; then
 
 ${cBOLD}Edit these files locally before continuing:${cRST}
   $REPO/qpext/qml/mqtt.json      → MQTT broker host/port/credentials
-  $REPO/qpext/qml/widgets.json   → ha.base_url + long-lived access token
+  $REPO/qpext/qml/ha.json        → HA base_url + long-lived access token
   $REPO/qpext/qml/cameras.json   → RTSP URL with camera credentials
 
 All three are .gitignored, so accidental commits aren't possible. When done:

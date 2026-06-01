@@ -107,11 +107,20 @@ cmd_status() {
 }
 
 cmd_push_qml() {
-    # Hot-reload friendly path: sync QML only, don't restart the app.
-    # Hello.qml polls HelloImpl.qml every ~1.5s and reloads its Loader.
+    # Hot-reload friendly path: sync QML/fonts/version.txt only, don't restart
+    # the app. Hello.qml polls HelloImpl.qml every ~1.5s and reloads its Loader.
+    #
+    # *.json files are explicitly excluded — they're per-device config
+    # managed by install.sh (initial seed) and dev/switch-device.sh
+    # (debug override). Letting `adb push --sync` carry them would stomp
+    # on whatever the current debug session set the device to.
     write_version
-    adb -s "$DEV" push --sync "${HERE}/qml/." "${REMOTE_ROOT}/" >/dev/null
-    echo "[deploy] qml synced; reload happens within ~1.5s"
+    STAGE=$(mktemp -d)
+    cp -R "${HERE}/qml/." "$STAGE/"
+    find "$STAGE" -name '*.json' -delete
+    adb -s "$DEV" push --sync "${STAGE}/." "${REMOTE_ROOT}/" >/dev/null
+    rm -rf "$STAGE"
+    echo "[deploy] qml/fonts/version synced; reload happens within ~1.5s"
 }
 
 case "${1:-install}" in

@@ -1,4 +1,4 @@
-"""Qpext Airmonitor — Home Assistant integration.
+"""Airmonitor App Extension — Home Assistant integration.
 
 Publishes the dashboard widget composition (chosen via the options UI) to the
 device's MQTT topic `qpext/<mac>/dashboard/set`. The qpext.so shim on the
@@ -31,7 +31,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up a Qpext Airmonitor from a config entry."""
+    """Set up an Airmonitor App Extension from a config entry."""
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = entry
 
     mac = entry.data[CONF_MAC]
@@ -40,7 +40,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         config_entry_id=entry.entry_id,
         identifiers={(DOMAIN, mac)},
         connections={(dr.CONNECTION_NETWORK_MAC, _format_mac(mac))},
-        name=f"Airmonitor {mac}",
+        name=f"Airmonitor App Extension {mac}",
         manufacturer="Qingping",
         model="Air Monitor 2",
         sw_version="qpext",
