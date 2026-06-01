@@ -28,12 +28,20 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 
+from homeassistant.helpers.event import async_track_state_change_event, async_track_time_interval
+from datetime import timedelta
+
 from .const import (
     CAMERAS_TOPIC_TEMPLATE,
+    CONF_AQI_ENTITY,
     CONF_CAMERAS,
     CONF_EVENTS,
+    CONF_HUMIDITY_ENTITY,
     CONF_MAC,
     CONF_TABS,
+    CONF_UV_ENTITY,
+    CONF_WEATHER,
+    CONF_WEATHER_ENTITY,
     CONF_WIDGETS,
     DEFAULT_TAB_ICON,
     DISCOVERY_BUTTON_TOPIC,
@@ -46,6 +54,7 @@ from .tabs import (
     tab_button_object_id,
     tab_qml_name,
 )
+from .weather import publish_weather
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -98,6 +107,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # reads the migrated view via migrate_options() each time so the device
     # always gets the new schema even before the user opens the UI.
     await _publish_all(hass, entry, bookkeeping)
+
+    # Weather-feeder: republish whenever any source entity state changes,
+    # plus a 5-min interval to keep forecasts fresh even when the upstream
+    # weather integration's state doesn't change (e.g. condition stays
+    # "cloudy" all day but the hourly forecasts roll forward by an hour).
+    _wire_weather_publisher(hass, entry)
 
     # Re-publish whenever the options change.
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
@@ -185,6 +200,67 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
     book = hass.data[f"{DOMAIN}_state"].setdefault(
         entry.entry_id, {"published_button_ids": set()})
     await _publish_all(hass, entry, book)
+    # Source entities may have changed → re-arm the listener with the new
+    # selection and publish once immediately so the device picks up the
+    # new feed inside the next QML poll (~1.5 s).
+    _wire_weather_publisher(hass, entry)
+
+
+def _weather_cfg(entry: ConfigEntry) -> dict[str, Any]:
+    """Read the weather-feeder sub-block out of entry.options."""
+    return dict((entry.options or {}).get(CONF_WEATHER, {}) or {})
+
+
+def _weather_source_entities(cfg: dict[str, Any]) -> list[str]:
+    """Return the list of HA entity_ids whose state changes should
+    trigger a re-publish — currently the weather/AQI/UV/humidity slots."""
+    out = []
+    for k in (CONF_WEATHER_ENTITY, CONF_AQI_ENTITY,
+              CONF_UV_ENTITY, CONF_HUMIDITY_ENTITY):
+        v = cfg.get(k)
+        if v:
+            out.append(v)
+    return out
+
+
+def _wire_weather_publisher(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Arm a state-change listener for the configured weather source
+    entities plus a 5-min interval refresh. Replaces any previous wiring
+    so options changes take effect immediately. When no weather entity
+    is configured we just unregister whatever was there before — the
+    shim then falls through to the real Qingping cloud."""
+    state_key = f"{DOMAIN}_state"
+    book = hass.data.setdefault(state_key, {}).setdefault(
+        entry.entry_id, {})
+    # Tear down previous listeners (idempotent on first call).
+    for unsub in book.pop("weather_unsubs", ()):
+        try:
+            unsub()
+        except Exception:                                  # noqa: BLE001
+            pass
+
+    cfg = _weather_cfg(entry)
+    sources = _weather_source_entities(cfg)
+    if not sources:
+        return
+
+    mac = entry.data[CONF_MAC]
+
+    async def _publish_now(*_args: Any, **_kw: Any) -> None:
+        try:
+            await publish_weather(hass, mac, cfg)
+        except Exception as err:                            # noqa: BLE001
+            _LOGGER.exception("qpext_airmonitor: weather publish failed: %s", err)
+
+    unsubs: list[Any] = []
+    unsubs.append(async_track_state_change_event(hass, sources,
+                                                 _publish_now))
+    unsubs.append(async_track_time_interval(hass, _publish_now,
+                                            timedelta(minutes=5)))
+    book["weather_unsubs"] = unsubs
+    # Fire one publish immediately so the device gets the new data without
+    # waiting for the next state change.
+    hass.async_create_task(_publish_now())
 
 
 async def _publish_all(

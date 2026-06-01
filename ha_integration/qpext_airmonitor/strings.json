@@ -34,7 +34,28 @@
           "edit_tab": "Edit a tab",
           "remove_tab": "Remove a tab",
           "events_menu": "Triggers (events)",
+          "weather_menu": "Weather feed (cloud substitution)",
           "finish": "Done"
+        }
+      },
+      "weather_menu": {
+        "title": "Weather feed",
+        "description": "Push HA-sourced weather + ИКВ + УФИ into the device's stock weather widget by substituting Qingping's cloud `/daily/*` responses. Configured source: `{current}`. Don't forget to enable the **Substitute cloud weather data** switch on the device.",
+        "menu_options": {
+          "edit_weather": "Pick HA source entities",
+          "clear_weather": "Clear configuration",
+          "init": "Back"
+        }
+      },
+      "edit_weather": {
+        "title": "HA → device weather source",
+        "description": "Pick a `weather.*` entity for current condition + temperature + forecasts (Open-Meteo works key-free); optional AQI and UV sensors fill ИКВ and УФИ. Leave fields blank to skip them — the stock widget will show 0 there. `City name` sets the small label above the temperature.",
+        "data": {
+          "weather_entity": "Weather entity (drives skycon, temperature, forecasts)",
+          "aqi_entity": "AQI sensor (ИКВ value)",
+          "uv_entity": "UV index sensor (УФИ value)",
+          "humidity_entity": "Humidity sensor (optional, overrides weather entity's humidity)",
+          "city_name": "City label"
         }
       },
       "add_tab": {

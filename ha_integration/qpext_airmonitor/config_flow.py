@@ -46,9 +46,15 @@ from homeassistant.helpers import selector
 from homeassistant.helpers.service_info.mqtt import MqttServiceInfo
 
 from .const import (
+    CONF_AQI_ENTITY,
+    CONF_CITY_NAME,
     CONF_EVENTS,
+    CONF_HUMIDITY_ENTITY,
     CONF_MAC,
     CONF_TABS,
+    CONF_UV_ENTITY,
+    CONF_WEATHER,
+    CONF_WEATHER_ENTITY,
     DEFAULT_ICONS,
     DEFAULT_TAB_ICON,
     DOMAIN,
@@ -256,6 +262,8 @@ class QpextOptionsFlow(config_entries.OptionsFlow):
         normalized = migrate_options(entry.options or {})
         self._tabs: list[dict[str, Any]] = normalized[CONF_TABS]
         self._events: list[dict[str, Any]] = normalized[CONF_EVENTS]
+        self._weather: dict[str, Any] = dict(
+            (entry.options or {}).get(CONF_WEATHER, {})) or {}
         self._tab_idx: int | None = None
         self._add_type: str | None = None
         self._edit_widget_idx: int | None = None
@@ -268,7 +276,7 @@ class QpextOptionsFlow(config_entries.OptionsFlow):
         menu = ["add_tab"]
         if self._tabs:
             menu += ["edit_tab", "remove_tab"]
-        menu += ["events_menu", "finish"]
+        menu += ["events_menu", "weather_menu", "finish"]
         return self.async_show_menu(step_id="init", menu_options=menu)
 
     async def async_step_finish(
@@ -276,8 +284,70 @@ class QpextOptionsFlow(config_entries.OptionsFlow):
     ) -> config_entries.ConfigFlowResult:
         return self.async_create_entry(
             title="",
-            data={CONF_TABS: self._tabs, CONF_EVENTS: self._events},
+            data={CONF_TABS: self._tabs, CONF_EVENTS: self._events,
+                  CONF_WEATHER: self._weather},
         )
+
+    # ----- weather feeder ------------------------------------------------- #
+
+    async def async_step_weather_menu(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        menu = ["edit_weather"]
+        if self._weather.get(CONF_WEATHER_ENTITY):
+            menu += ["clear_weather"]
+        menu += ["init"]
+        return self.async_show_menu(
+            step_id="weather_menu", menu_options=menu,
+            description_placeholders={
+                "current": self._weather.get(CONF_WEATHER_ENTITY) or "(none)",
+            },
+        )
+
+    async def async_step_edit_weather(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        cur = self._weather
+        if user_input is not None:
+            self._weather = {
+                CONF_WEATHER_ENTITY:  user_input.get(CONF_WEATHER_ENTITY) or "",
+                CONF_AQI_ENTITY:      user_input.get(CONF_AQI_ENTITY) or "",
+                CONF_UV_ENTITY:       user_input.get(CONF_UV_ENTITY) or "",
+                CONF_HUMIDITY_ENTITY: user_input.get(CONF_HUMIDITY_ENTITY) or "",
+                CONF_CITY_NAME:       (user_input.get(CONF_CITY_NAME) or "").strip(),
+            }
+            await self._persist()
+            return await self.async_step_weather_menu()
+        def _entity_field(key: str, domain: str) -> Any:
+            # vol.UNDEFINED keeps the field truly optional — the EntitySelector
+            # would otherwise reject the empty-string default we'd emit when
+            # the user has nothing selected yet.
+            default = cur.get(key) or vol.UNDEFINED
+            return (vol.Optional(key, default=default),
+                    selector.EntitySelector(
+                        selector.EntitySelectorConfig(domain=domain)))
+
+        schema_dict = {}
+        for k, dom in (
+            (CONF_WEATHER_ENTITY,  "weather"),
+            (CONF_AQI_ENTITY,      "sensor"),
+            (CONF_UV_ENTITY,       "sensor"),
+            (CONF_HUMIDITY_ENTITY, "sensor"),
+        ):
+            key, sel = _entity_field(k, dom)
+            schema_dict[key] = sel
+        schema_dict[vol.Optional(CONF_CITY_NAME,
+                                 default=cur.get(CONF_CITY_NAME, ""))] = \
+            selector.TextSelector()
+        return self.async_show_form(step_id="edit_weather",
+                                    data_schema=vol.Schema(schema_dict))
+
+    async def async_step_clear_weather(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        self._weather = {}
+        await self._persist()
+        return await self.async_step_weather_menu()
 
     # ----- add tab -------------------------------------------------------- #
 
@@ -805,5 +875,9 @@ class QpextOptionsFlow(config_entries.OptionsFlow):
         """
         self.hass.config_entries.async_update_entry(
             self.entry,
-            options={CONF_TABS: self._tabs, CONF_EVENTS: self._events},
+            options={
+                CONF_TABS: self._tabs,
+                CONF_EVENTS: self._events,
+                CONF_WEATHER: self._weather,
+            },
         )

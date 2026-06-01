@@ -196,6 +196,52 @@ def add_mqtt_integration(access: str) -> None:
     print("[bootstrap] MQTT integration configured", flush=True)
 
 
+def add_open_meteo_integration(access: str) -> None:
+    """Drive the Open-Meteo config_flow so the qpext weather feeder has a
+    free, key-less forecast source out of the box. Open-Meteo's HA
+    integration takes lat/lng (defaults to HA's home zone) and creates
+    `weather.<name>` + `sensor.open_meteo_*` entities."""
+    h = {"Authorization": f"Bearer {access}"}
+    status, body = _req("GET", "/api/config/config_entries/entry", headers=h)
+    if status == 200 and isinstance(body, list):
+        if any(e.get("domain") == "open_meteo" for e in body):
+            print("[bootstrap] Open-Meteo integration already configured", flush=True)
+            return
+
+    status, body = _req(
+        "POST",
+        "/api/config/config_entries/flow",
+        {"handler": "open_meteo", "show_advanced_options": True},
+        headers=h,
+    )
+    if status != 200 or not isinstance(body, dict):
+        print(f"[bootstrap] starting open_meteo flow failed: {status} {body!r}",
+              flush=True)
+        return
+    # First step is a single form asking for the HA `zone.*` whose
+    # coordinates the integration will track — point it at the built-in
+    # home zone so it follows the user's `latitude`/`longitude` in
+    # configuration.yaml.
+    submission_by_step = {
+        "user": {"zone": "zone.home"},
+    }
+    while isinstance(body, dict) and body.get("type") == "form":
+        flow_id = body["flow_id"]
+        step_id = body.get("step_id", "user")
+        payload = submission_by_step.get(step_id, {})
+        status, body = _req(
+            "POST",
+            f"/api/config/config_entries/flow/{flow_id}",
+            payload,
+            headers=h,
+        )
+        if status not in (200, 201):
+            print(f"[bootstrap] open_meteo step {step_id} failed: {status} {body!r}",
+                  flush=True)
+            return
+    print("[bootstrap] Open-Meteo integration configured", flush=True)
+
+
 def mint_long_lived(access: str) -> str:
     """Create a long-lived access token via the WebSocket API.
 
@@ -492,6 +538,7 @@ def main() -> None:
     else:
         access = login_with_password()
     add_mqtt_integration(access)
+    add_open_meteo_integration(access)
     if existing_token_valid():
         print("[bootstrap] reusing existing long-lived token (still valid)", flush=True)
     else:

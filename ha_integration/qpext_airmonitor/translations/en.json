@@ -34,7 +34,27 @@
           "edit_tab": "Edit a tab",
           "remove_tab": "Remove a tab",
           "events_menu": "Triggers (events)",
+          "weather_menu": "Weather feed",
           "finish": "Done"
+        }
+      },
+      "weather_menu": {
+        "title": "Weather feed",
+        "description": "Current source: `{current}`.",
+        "menu_options": {
+          "edit_weather": "Pick HA source entities",
+          "clear_weather": "Clear configuration",
+          "init": "Back"
+        }
+      },
+      "edit_weather": {
+        "title": "Weather source entities",
+        "data": {
+          "weather_entity": "Weather entity",
+          "aqi_entity": "AQI sensor",
+          "uv_entity": "UV sensor",
+          "humidity_entity": "Humidity sensor (optional)",
+          "city_name": "City label"
         }
       },
       "add_tab": {
