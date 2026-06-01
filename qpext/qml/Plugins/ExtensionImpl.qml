@@ -1,4 +1,4 @@
-// Bumping revision + saving triggers hot-reload through Hello.qml.
+// Bumping revision + saving triggers hot-reload through Extension.qml.
 // Renders widgets.json as a grid; each widget type lives in widgets/<Type>.qml.
 import QtQuick 2.9
 import QtQuick.Layouts 1.3
@@ -8,7 +8,7 @@ import Qing.Controls 1.0
 Item {
     id: impl
     anchors.fill: parent
-    readonly property int revision: 16
+    readonly property int revision: 17
     readonly property int topGap: 72
     readonly property int widgetHeight: 180
     // Loaded once on creation from /data/qpext/version.txt, which deploy.sh
@@ -288,7 +288,7 @@ Item {
         xhr.send()
     }
     Component.onCompleted: {
-        console.log("[qpext] HelloImpl.qml rev=" + impl.revision + " loaded")
+        console.log("[qpext] ExtensionImpl.qml rev=" + impl.revision + " loaded")
         loadVersion()
         loadHaConfig()
         loadConfig(false)

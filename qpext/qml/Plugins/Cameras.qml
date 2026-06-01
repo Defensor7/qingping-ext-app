@@ -1,5 +1,5 @@
 // Thin wrapper that polls CamerasImpl.qml on disk and reloads on change.
-// Same hot-reload pattern as Hello.qml.
+// Same hot-reload pattern as Extension.qml.
 import QtQuick 2.9
 import Qing.Controls 1.0
 

@@ -7,7 +7,7 @@
 #   /qingping/bin/QingSnow2App.bak       -> factory backup (already exists)
 #   /data/qpext/qpext.so                 -> preload shim
 #   /data/qpext/{main,MainPage}.qml      -> patched UI entry
-#   /data/qpext/Plugins/Hello.qml        -> our custom tab
+#   /data/qpext/Plugins/Extension.qml        -> our custom tab
 #
 # Idempotent. `deploy.sh undo` restores the original binary.
 set -eu
@@ -21,7 +21,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 run()  { adb -s "$DEV" shell "$@"; }
 push() { adb -s "$DEV" push "$1" "$2" >/dev/null; }
 
-# Refresh qml/version.txt from the git-describe-derived version so HelloImpl
+# Refresh qml/version.txt from the git-describe-derived version so ExtensionImpl
 # can show it in the corner of the HA tab and the user can tell at a glance
 # what's deployed. Called before every install / push-qml.
 write_version() {
@@ -108,7 +108,7 @@ cmd_status() {
 
 cmd_push_qml() {
     # Hot-reload friendly path: sync QML/fonts/version.txt only, don't restart
-    # the app. Hello.qml polls HelloImpl.qml every ~1.5s and reloads its Loader.
+    # the app. Extension.qml polls ExtensionImpl.qml every ~1.5s and reloads its Loader.
     #
     # *.json files are explicitly excluded — they're per-device config
     # managed by install.sh (initial seed) and dev/switch-device.sh

@@ -1,5 +1,5 @@
-// Thin wrapper that polls HelloImpl.qml on disk and reloads on change.
-// Edit HelloImpl.qml; `deploy.sh push-qml` pushes it; this picks it up in ~1.5s
+// Thin wrapper that polls ExtensionImpl.qml on disk and reloads on change.
+// Edit ExtensionImpl.qml; `deploy.sh push-qml` pushes it; this picks it up in ~1.5s
 // without restarting the app. The query string is what bypasses Qt's component
 // cache so the new file is actually re-read.
 import QtQuick 2.9
@@ -22,13 +22,13 @@ Item {
     Loader {
         id: loader
         anchors.fill: parent
-        source: "file:///data/qpext/Plugins/HelloImpl.qml?v=" + shell.version
+        source: "file:///data/qpext/Plugins/ExtensionImpl.qml?v=" + shell.version
         asynchronous: false
         onStatusChanged: {
             if (status === Loader.Error) {
-                console.log("[qpext] HelloImpl.qml load error")
+                console.log("[qpext] ExtensionImpl.qml load error")
             } else if (status === Loader.Ready) {
-                console.log("[qpext] HelloImpl.qml ready (v=" + shell.version + ")")
+                console.log("[qpext] ExtensionImpl.qml ready (v=" + shell.version + ")")
             }
         }
     }
@@ -40,7 +40,7 @@ Item {
         triggeredOnStart: true
         onTriggered: {
             var xhr = new XMLHttpRequest()
-            xhr.open("GET", "file:///data/qpext/Plugins/HelloImpl.qml")
+            xhr.open("GET", "file:///data/qpext/Plugins/ExtensionImpl.qml")
             xhr.onreadystatechange = function() {
                 if (xhr.readyState !== XMLHttpRequest.DONE) return
                 if (xhr.status !== 0 && xhr.status !== 200) return  // file:// often gives status=0
@@ -52,7 +52,7 @@ Item {
                     var first = (shell.lastSig === "")
                     shell.lastSig = sig
                     if (!first) {
-                        console.log("[qpext] HelloImpl.qml changed (" + t.length + " bytes), reloading")
+                        console.log("[qpext] ExtensionImpl.qml changed (" + t.length + " bytes), reloading")
                         shell.version += 1
                     }
                 }

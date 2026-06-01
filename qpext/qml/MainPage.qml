@@ -117,7 +117,7 @@ Item {
                     // <<< qpext custom tabs >>>
                     ListElement {
                         name: "qpextView"
-                        source: "file:///data/qpext/Plugins/Hello.qml"
+                        source: "file:///data/qpext/Plugins/Extension.qml"
                     }
                     ListElement {
                         name: "qpextCamerasView"
