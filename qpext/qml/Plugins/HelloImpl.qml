@@ -8,9 +8,12 @@ import Qing.Controls 1.0
 Item {
     id: impl
     anchors.fill: parent
-    readonly property int revision: 14
+    readonly property int revision: 15
     readonly property int topGap: 72
     readonly property int widgetHeight: 180
+    // Loaded once on creation from /data/qpext/version.txt, which deploy.sh
+    // refreshes from `version.sh` (git describe) on every push.
+    property string version: ""
 
     function restore() {}
 
@@ -134,7 +137,7 @@ Item {
                 font.bold: true
             }
             QText {
-                text: "rev " + impl.revision
+                text: impl.version || "rev " + impl.revision
                 color: "#5577aa"
                 font.pixelSize: 14
             }
@@ -232,8 +235,20 @@ Item {
         }
     }
 
+    function loadVersion() {
+        var xhr = new XMLHttpRequest()
+        xhr.open("GET", "file:///data/qpext/version.txt")
+        xhr.onreadystatechange = function() {
+            if (xhr.readyState !== XMLHttpRequest.DONE) return
+            if (xhr.status !== 0 && xhr.status !== 200) return
+            var t = (xhr.responseText || "").replace(/\s+$/, "")
+            if (t) impl.version = t
+        }
+        xhr.send()
+    }
     Component.onCompleted: {
         console.log("[qpext] HelloImpl.qml rev=" + impl.revision + " loaded")
+        loadVersion()
         loadConfig(false)
     }
 }

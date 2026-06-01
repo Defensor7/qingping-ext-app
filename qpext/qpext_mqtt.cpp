@@ -33,6 +33,12 @@
 
 extern "C" void qplog_c(const char* fmt, ...);
 
+// Provided at compile time by build.sh; fall back to "dev" if the build
+// script didn't set it (e.g. someone invokes zig c++ directly).
+#ifndef QPEXT_VERSION
+#define QPEXT_VERSION "dev"
+#endif
+
 namespace {
 
 // ---------------------------------------------------------------------------
@@ -359,7 +365,7 @@ static void publish_discovery(int fd, const MqttCfg& c) {
         "\"name\":\"Airmonitor (qpext)\","
         "\"manufacturer\":\"Qingping\","
         "\"model\":\"Air Monitor 2\","
-        "\"sw_version\":\"qpext\","
+        "\"sw_version\":\"qpext " QPEXT_VERSION "\","
         "\"connections\":[[\"mac\",\"" + c.mac + "\"]]"
         "}";
 
@@ -444,6 +450,7 @@ static void publish_presence(int fd, const MqttCfg& c) {
          "\"manufacturer\":\"Qingping\","
          "\"model\":\"Air Monitor 2\","
          "\"sw\":\"qpext\","
+         "\"version\":\"" QPEXT_VERSION "\","
          "\"dashboard_topic\":\"qpext/"+c.mac_norm+"/dashboard/set\","
          "\"cmd_topic\":\"qpext/"+c.mac_norm+"/cmd\"}";
     mqtt_publish(fd, topic, payload, /*retain=*/true);

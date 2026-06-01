@@ -6,6 +6,7 @@
 qpext/qml/cameras.json
 qpext/qml/widgets.json
 qpext/qml/mqtt.json
+qpext/qml/version.txt
 
 # Build outputs / proprietary device artifacts pulled for reverse engineering.
 qpext/qpext.so

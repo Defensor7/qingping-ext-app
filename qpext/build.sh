@@ -11,9 +11,13 @@ set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE"
 
+QPEXT_VERSION=$(sh "$HERE/../version.sh")
+echo "[build] version: $QPEXT_VERSION"
+
 zig c++ \
     -target aarch64-linux-gnu.2.31 \
     -shared -fPIC -O2 \
+    -DQPEXT_VERSION="\"$QPEXT_VERSION\"" \
     -Wl,--version-script=qpext.ver \
     -o qpext.so \
     qpext.cpp qpext_ha.cpp qpext_mqtt.cpp \

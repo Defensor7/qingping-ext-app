@@ -21,7 +21,17 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 run()  { adb -s "$DEV" shell "$@"; }
 push() { adb -s "$DEV" push "$1" "$2" >/dev/null; }
 
+# Refresh qml/version.txt from the git-describe-derived version so HelloImpl
+# can show it in the corner of the HA tab and the user can tell at a glance
+# what's deployed. Called before every install / push-qml.
+write_version() {
+    v=$(sh "${HERE}/../version.sh" 2>/dev/null || echo dev)
+    printf '%s\n' "$v" > "${HERE}/qml/version.txt"
+    echo "[deploy] version: $v"
+}
+
 cmd_install() {
+    write_version
     echo "[deploy] push files to ${DEV}:${REMOTE_ROOT}"
     run "mkdir -p ${REMOTE_ROOT}"
     # Sync the entire qml/ tree (Header/, Notification/, Plugins/, ...).
@@ -99,6 +109,7 @@ cmd_status() {
 cmd_push_qml() {
     # Hot-reload friendly path: sync QML only, don't restart the app.
     # Hello.qml polls HelloImpl.qml every ~1.5s and reloads its Loader.
+    write_version
     adb -s "$DEV" push --sync "${HERE}/qml/." "${REMOTE_ROOT}/" >/dev/null
     echo "[deploy] qml synced; reload happens within ~1.5s"
 }
