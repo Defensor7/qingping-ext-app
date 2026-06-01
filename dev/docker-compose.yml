@@ -1,0 +1,35 @@
+# Local debug stack for the qpext_airmonitor HA integration.
+#
+# HA mounts the integration directory read-only as a custom_component, so any
+# edit to ha_integration/qpext_airmonitor/*.py picks up after a HA restart
+# (Settings → System → Restart, or `docker compose restart homeassistant`).
+#
+# Mosquitto is published on host:1883 so the device can be repointed at the
+# Mac's LAN IP via dev/switch-device.sh.
+#
+# Files written by HA (state, DB, .storage, etc.) live in dev/ha-config/ —
+# blow that directory away to start over.
+
+services:
+  mqtt:
+    image: eclipse-mosquitto:2
+    container_name: qpext-dev-mqtt
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    container_name: qpext-dev-ha
+    restart: unless-stopped
+    depends_on:
+      - mqtt
+    ports:
+      - "8123:8123"
+    volumes:
+      - ./ha-config:/config
+      - ../ha_integration/qpext_airmonitor:/config/custom_components/qpext_airmonitor:ro
+    environment:
+      - TZ=${TZ:-Europe/Moscow}

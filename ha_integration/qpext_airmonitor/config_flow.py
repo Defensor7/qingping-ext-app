@@ -25,9 +25,9 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.components.mqtt import MqttServiceInfo
 from homeassistant.core import callback
 from homeassistant.helpers import selector
+from homeassistant.helpers.service_info.mqtt import MqttServiceInfo
 
 from .const import (
     CONF_EVENTS,
@@ -36,7 +36,6 @@ from .const import (
     DEFAULT_ICONS,
     DOMAIN,
     DOMAIN_FOR_WIDGET_TYPE,
-    ENTITY_WIDGET_TYPES,
     TAB_NAMES,
     WIDGET_TYPES,
 )

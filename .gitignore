@@ -8,6 +8,10 @@ qpext/qml/widgets.json
 qpext/qml/mqtt.json
 qpext/qml/version.txt
 
+# Local debug stack state (HA storage, db, token cache).
+dev/ha-config/
+dev/mosquitto-data/
+
 # Build outputs / proprietary device artifacts pulled for reverse engineering.
 qpext/qpext.so
 QingSnow2App
