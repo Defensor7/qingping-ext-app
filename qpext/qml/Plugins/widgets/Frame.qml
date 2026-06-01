@@ -10,6 +10,19 @@ Rectangle {
     property bool available: !!hass || (widget && widget.type === "button") ||
                               (widget && widget.type === "script") ||
                               (widget && widget.type === "scene")
+
+    // Display name shown in the widget header. Priority:
+    //   1. widget.label    — explicitly set by the user (HA options flow)
+    //   2. hass.attributes.friendly_name — HA's customised name for the entity
+    //   3. widget.entity   — raw entity_id, last-resort fallback
+    // We expose this as a readonly property so every widget can just bind
+    // to `displayName` instead of repeating the chain.
+    readonly property string displayName: {
+        if (widget && widget.label) return widget.label
+        if (hass && hass.attributes && hass.attributes.friendly_name)
+            return hass.attributes.friendly_name
+        return (widget && widget.entity) || ""
+    }
     signal call(string domain, string service, var data)
     signal tapped()
 

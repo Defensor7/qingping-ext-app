@@ -36,7 +36,7 @@ Frame {
             }
             QText {
                 Layout.fillWidth: true
-                text: widget ? (widget.label || widget.entity || "") : ""
+                text: w.displayName
                 color: w.on ? "#bfe1ff" : "#88aacc"
                 font.pixelSize: 20
                 elide: Text.ElideRight
