@@ -38,7 +38,12 @@ Rectangle {
     signal call(string domain, string service, var data)
     signal tapped()
 
-    default property alias bodyChildren: body.children
+    // `body.data` instead of `body.children` so widgets can declare both
+    // visual children (Items) AND non-Item QObjects (e.g. a QQC2.Popup
+    // attached to the Window overlay) inside the Frame block. Visual
+    // children still end up parented to `body` for layout purposes — that
+    // behaviour is preserved by Item.data's mixed semantics.
+    default property alias bodyChildren: body.data
 
     radius: 8
     // bgColor (from widget.bg_color) is a full override — it wins over the
