@@ -156,13 +156,18 @@ Frame {
     // ------------------------------------------------------------------
     QQC2.Popup {
         id: detailPopup
-        parent: Window.window ? Window.window.contentItem : w
         modal: true
         focus: true
-        x: parent ? (parent.width  - width)  / 2 : 0
-        y: parent ? (parent.height - height) / 2 : 0
-        width:  parent ? parent.width  : 720
-        height: parent ? parent.height : 720
+        // Use the toplevel Window's attached dimensions so the popup spans
+        // the whole screen instead of being clipped to the card. Qt Quick
+        // Controls 2's Popup automatically reparents up to a root item at
+        // open time, so we don't need to set `parent` explicitly — and
+        // `Window.window` was returning null on this device's eglfs setup,
+        // which used to bind the size to the card itself.
+        x: (Window.width  - width)  / 2
+        y: (Window.height - height) / 2
+        width:  Math.min(640, Window.width  - 40)
+        height: Math.min(620, Window.height - 60)
         closePolicy: QQC2.Popup.CloseOnEscape | QQC2.Popup.CloseOnPressOutside
         background: Rectangle {
             color: "#0c1420"
