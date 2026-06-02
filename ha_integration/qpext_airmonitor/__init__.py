@@ -108,11 +108,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # always gets the new schema even before the user opens the UI.
     await _publish_all(hass, entry, bookkeeping)
 
-    # Weather-feeder: republish whenever any source entity state changes,
-    # plus a 5-min interval to keep forecasts fresh even when the upstream
-    # weather integration's state doesn't change (e.g. condition stays
-    # "cloudy" all day but the hourly forecasts roll forward by an hour).
-    _wire_weather_publisher(hass, entry)
+    # Weather feeder hidden — see config_flow's weather_menu / edit_weather
+    # methods (kept around) and the shim-side commentary in
+    # qpext/qpext.cpp::qpext_ssl_write_hook for re-enabling.
+    # _wire_weather_publisher(hass, entry)
 
     # Re-publish whenever the options change.
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
@@ -200,10 +199,8 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
     book = hass.data[f"{DOMAIN}_state"].setdefault(
         entry.entry_id, {"published_button_ids": set()})
     await _publish_all(hass, entry, book)
-    # Source entities may have changed → re-arm the listener with the new
-    # selection and publish once immediately so the device picks up the
-    # new feed inside the next QML poll (~1.5 s).
-    _wire_weather_publisher(hass, entry)
+    # Weather feeder hidden — see commentary in async_setup_entry.
+    # _wire_weather_publisher(hass, entry)
 
 
 def _weather_cfg(entry: ConfigEntry) -> dict[str, Any]:

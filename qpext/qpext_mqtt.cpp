@@ -775,7 +775,7 @@ static void publish_discovery(int fd, const MqttCfg& c) {
             {"block_cloud_https",   "Block Qingping cloud HTTPS",    "mdi:cloud-off-outline"},
             {"block_stock_mqtt",    "Block stock-app MQTT push",     "mdi:cloud-cancel"},
             {"block_miio_ipc",      "Block Mi Home miio_client IPC", "mdi:bridge"},
-            {"substitute_weather",  "Substitute cloud weather data", "mdi:weather-partly-cloudy"},
+            // {"substitute_weather", "Substitute cloud weather data", "mdi:weather-partly-cloudy"},
         };
         for (const auto& e : entries) {
             std::string cfg_topic   = "homeassistant/switch/" + dev_id + "/" +
@@ -1089,8 +1089,13 @@ static const ToggleSpec EXTRA_TOGGLES[] = {
         false, qpext_set_block_stock_mqtt,    qpext_get_block_stock_mqtt},
     {"block_miio_ipc",      "block_miio_ipc",      BLOCK_MIIO_IPC_FILE,
         false, qpext_set_block_miio_ipc,      qpext_get_block_miio_ipc},
-    {"substitute_weather",  "substitute_weather",  SUBSTITUTE_WEATHER_FILE,
-        false, qpext_set_substitute_weather,  qpext_get_substitute_weather},
+    // Weather substitution disabled (hidden from HA + no MQTT subscriber).
+    // Re-enable by uncommenting this entry, the substitute_weather entry in
+    // publish_discovery's `entries[]` above, the WEATHER_ENDPOINTS subscribe/
+    // dispatch in mqtt_thread_fn, and the substitution branch in
+    // qpext.cpp::qpext_ssl_write_hook.
+    // {"substitute_weather",  "substitute_weather",  SUBSTITUTE_WEATHER_FILE,
+    //     false, qpext_set_substitute_weather,  qpext_get_substitute_weather},
 };
 static const int EXTRA_TOGGLES_N =
     (int)(sizeof(EXTRA_TOGGLES) / sizeof(EXTRA_TOGGLES[0]));
@@ -1182,12 +1187,16 @@ static void* mqtt_thread_fn(void*) {
                                   EXTRA_TOGGLES[i].obj_id + "/set";
             mqtt_subscribe(fd, extra_set_topics[i], (uint16_t)(10 + i));
         }
-        std::string weather_set_topics[WEATHER_ENDPOINTS_N];
-        for (int i = 0; i < WEATHER_ENDPOINTS_N; ++i) {
-            weather_set_topics[i] = "qpext/" + cfg.mac_norm + "/weather/" +
-                                    WEATHER_ENDPOINTS[i] + "/set";
-            mqtt_subscribe(fd, weather_set_topics[i], (uint16_t)(20 + i));
-        }
+        // Weather endpoints subscribe disabled — see substitute_weather
+        // commentary in qpext.cpp / EXTRA_TOGGLES above for re-enabling.
+        std::string weather_set_topics[WEATHER_ENDPOINTS_N];  // kept for the
+                                                              // dispatch loop
+                                                              // below
+        // for (int i = 0; i < WEATHER_ENDPOINTS_N; ++i) {
+        //     weather_set_topics[i] = "qpext/" + cfg.mac_norm + "/weather/" +
+        //                             WEATHER_ENDPOINTS[i] + "/set";
+        //     mqtt_subscribe(fd, weather_set_topics[i], (uint16_t)(20 + i));
+        // }
         publish_update_check_state(fd, cfg.mac_norm);
         publish_ping_stub_state(fd, cfg.mac_norm);
         for (int i = 0; i < EXTRA_TOGGLES_N; ++i)
@@ -1223,13 +1232,15 @@ static void* mqtt_thread_fn(void*) {
                                 matched = true;
                             }
                         }
-                        for (int i = 0; i < WEATHER_ENDPOINTS_N && !matched; ++i) {
-                            if (pkt.topic == weather_set_topics[i]) {
-                                handle_weather_set(WEATHER_ENDPOINTS[i],
-                                                   pkt.payload);
-                                matched = true;
-                            }
-                        }
+                        // Weather-endpoint dispatch disabled along with the
+                        // subscribe above.
+                        // for (int i = 0; i < WEATHER_ENDPOINTS_N && !matched; ++i) {
+                        //     if (pkt.topic == weather_set_topics[i]) {
+                        //         handle_weather_set(WEATHER_ENDPOINTS[i],
+                        //                            pkt.payload);
+                        //         matched = true;
+                        //     }
+                        // }
                     }
                 }
                 // type 0x9 = SUBACK, 0xD = PINGRESP — ignore

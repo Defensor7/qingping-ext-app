@@ -640,26 +640,26 @@ extern "C" int qpext_ssl_write_hook(void* ssl, const void* buf, int num) {
             // hook can tag the matching response body — see below.
             qpext_tag_ssl_url(ssl, line);
 
-            // Weather substitution. If the toggle is on and the URL is one
-            // of `/daily/*`, try to build a synthetic response from
-            // `/data/qpext/weather/<endpoint>.json`. If we have data, arm
-            // the SSL_read hook to deliver it AND drop this write so the
-            // server never sees the request — the cloud's real response is
-            // then irrelevant. If we have no data, fall through and let
-            // the cloud answer normally.
-            if (g_substitute_weather) {
-                const char* endpoint = qpext_match_weather_endpoint(line);
-                if (endpoint) {
-                    int synth_len = 0;
-                    char* synth = qpext_build_weather_response(endpoint, &synth_len);
-                    if (synth) {
-                        qpext_arm_ssl_synth(ssl, synth, synth_len);
-                        qplog("[qpext] weather substituted: %s (%d B synth)",
-                              endpoint, synth_len);
-                        return num;   // pretend the bytes went out
-                    }
-                }
-            }
+            // Weather substitution disabled — leave the stock app on the
+            // real Qingping cloud `/daily/*` responses for now. Re-enable
+            // by uncommenting this block + the toggle / subscriber wiring
+            // in qpext_mqtt.cpp + the menu wiring in
+            // ha_integration/qpext_airmonitor/config_flow.py + __init__.py.
+            // The matcher/builder/SSL_read drain logic above stays linked.
+            //
+            // if (g_substitute_weather) {
+            //     const char* endpoint = qpext_match_weather_endpoint(line);
+            //     if (endpoint) {
+            //         int synth_len = 0;
+            //         char* synth = qpext_build_weather_response(endpoint, &synth_len);
+            //         if (synth) {
+            //             qpext_arm_ssl_synth(ssl, synth, synth_len);
+            //             qplog("[qpext] weather substituted: %s (%d B synth)",
+            //                   endpoint, synth_len);
+            //             return num;   // pretend the bytes went out
+            //         }
+            //     }
+            // }
         }
 
         if (!g_update_check_allowed) {

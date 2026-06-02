@@ -276,7 +276,10 @@ class QpextOptionsFlow(config_entries.OptionsFlow):
         menu = ["add_tab"]
         if self._tabs:
             menu += ["edit_tab", "remove_tab"]
-        menu += ["events_menu", "weather_menu", "finish"]
+        # Weather feed hidden — see config_flow's weather_menu / edit_weather
+        # methods (kept around) and the shim-side commentary in
+        # qpext/qpext.cpp::qpext_ssl_write_hook for re-enabling.
+        menu += ["events_menu", "finish"]
         return self.async_show_menu(step_id="init", menu_options=menu)
 
     async def async_step_finish(
