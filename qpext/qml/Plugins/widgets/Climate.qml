@@ -24,6 +24,7 @@ Frame {
         w.call("climate", svc, { "entity_id": widget.entity })
     }
 
+    // cycleMode() retained for any future UI that wants HVAC-mode switching.
     function cycleMode() {
         if (!widget || !widget.entity || !hass || !hass.attributes) return
         var modes = hass.attributes.hvac_modes || []
@@ -42,22 +43,13 @@ Frame {
         RowLayout {
             Layout.fillWidth: true
             spacing: 10
-            // Wrap MdiIcon in an Item so a sibling MouseArea can sit on top
-            // without breaking the Text-derived MdiIcon's layout.
-            Item {
+            MdiIcon {
                 Layout.preferredWidth: w.iconSize || 36
                 Layout.preferredHeight: w.iconSize || 36
-                MdiIcon {
-                    anchors.centerIn: parent
-                    name: w.on ? ((widget && widget.icon) || "thermostat")
-                               : "power-off"
-                    size: w.iconSize || 34
-                    color: w.iconColor || (w.on ? "#5ab8ff" : "#88aacc")
-                }
-                MouseArea {
-                    anchors.fill: parent
-                    onClicked: w.toggleOnOff()
-                }
+                name: w.on ? ((widget && widget.icon) || "thermostat")
+                           : "power-off"
+                size: w.iconSize || 34
+                color: w.iconColor || (w.on ? "#5ab8ff" : "#88aacc")
             }
             QText {
                 Layout.fillWidth: true
@@ -78,24 +70,20 @@ Frame {
             font.bold: true
             horizontalAlignment: Text.AlignRight
         }
-        Item {  // tap = cycle HVAC mode
+        // Static mode/setpoint label (no longer a button — user didn't want
+        // the extra control on the card; HVAC mode is left to HA-side
+        // automations).
+        QText {
             Layout.fillWidth: true
-            Layout.preferredHeight: modeLabel.implicitHeight + 4
-            QText {
-                id: modeLabel
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                text: w.mode + " · set " + w.setTemp.toFixed(1) + "°"
-                color: "#88aacc"
-                font.pixelSize: 14
-                elide: Text.ElideRight
-            }
-            MouseArea {
-                anchors.fill: parent
-                onClicked: w.cycleMode()
-            }
+            text: w.mode + " · set " + w.setTemp.toFixed(1) + "°"
+            color: "#88aacc"
+            font.pixelSize: 14
+            horizontalAlignment: Text.AlignRight
+            elide: Text.ElideRight
         }
 
+        // Three equal buttons: − / power / + . Power swaps icon and
+        // colour on state so it's obvious which side is currently armed.
         RowLayout {
             Layout.fillWidth: true
             spacing: 6
@@ -107,6 +95,23 @@ Frame {
                 border.color: "#1f4870"; border.width: 1
                 QText { anchors.centerIn: parent; text: "–"; color: "white"; font.pixelSize: 30 }
                 MouseArea { id: minusArea; anchors.fill: parent; onClicked: w.adjust(-0.5) }
+            }
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 40
+                radius: 6
+                color: powerArea.pressed
+                       ? "#2f6db0"
+                       : (w.on ? "#1f5588" : "#0d2538")
+                border.color: w.on ? "#5ab8ff" : "#1f4870"
+                border.width: 1
+                MdiIcon {
+                    anchors.centerIn: parent
+                    name: "power"
+                    size: 24
+                    color: w.on ? "white" : "#88aacc"
+                }
+                MouseArea { id: powerArea; anchors.fill: parent; onClicked: w.toggleOnOff() }
             }
             Rectangle {
                 Layout.fillWidth: true
